@@ -1,0 +1,12 @@
+{
+  "cookieUrl": "https://localhost:8443",
+  "bridgePort": 18443,
+  "refreshIntervalMinutes": 2,
+  "staleAfterSeconds": 600,
+  "cookies": [
+    "session_token",
+    "auth_jwt",
+    "device_id",
+    "csrf_token"
+  ]
+}

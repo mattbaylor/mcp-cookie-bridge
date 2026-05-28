@@ -1,0 +1,25 @@
+{
+  "name": "mcp-cookie-bridge",
+  "version": "1.0.0",
+  "description": "MCP server that exposes browser cookies captured by the MCP Cookie Bridge Chrome extension",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "mcp-cookie-bridge": "dist/index.js"
+  },
+  "scripts": {
+    "build": "./node_modules/.bin/tsc",
+    "watch": "./node_modules/.bin/tsc --watch",
+    "start": "node dist/index.js"
+  },
+  "keywords": ["mcp", "cookies", "chrome-extension", "dev-tools", "ai"],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.13.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}

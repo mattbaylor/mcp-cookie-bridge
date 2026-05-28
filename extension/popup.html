@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      width: 340px;
+      padding: 16px;
+      background: #0f172a;
+      color: #e2e8f0;
+      font-size: 13px;
+    }
+    h1 {
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 12px;
+      color: #f8fafc;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      margin-bottom: 12px;
+      font-weight: 500;
+    }
+    .status-bar.ok { background: #064e3b; color: #6ee7b7; }
+    .status-bar.partial { background: #7c2d12; color: #fdba74; }
+    .status-bar.none { background: #450a0a; color: #fca5a5; }
+    .status-bar.noconfig { background: #78350f; color: #fde68a; }
+    .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      display: inline-block;
+    }
+    .dot.green { background: #22c55e; }
+    .dot.yellow { background: #f59e0b; }
+    .dot.red { background: #ef4444; }
+
+    .cookie-list { list-style: none; margin-bottom: 12px; }
+    .cookie-list li {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 0;
+      border-bottom: 1px solid #1e293b;
+      font-family: 'SF Mono', 'Menlo', monospace;
+      font-size: 11px;
+    }
+    .cookie-list li:last-child { border-bottom: none; }
+    .cookie-name { flex: 1; color: #94a3b8; overflow: hidden; text-overflow: ellipsis; }
+    .cookie-present { color: #22c55e; }
+    .cookie-missing { color: #ef4444; }
+
+    .meta {
+      font-size: 11px;
+      color: #64748b;
+      margin-bottom: 12px;
+    }
+    .meta span { color: #94a3b8; }
+
+    .bridge-status {
+      font-size: 11px;
+      padding: 6px 10px;
+      border-radius: 6px;
+      margin-bottom: 12px;
+    }
+    .bridge-status.connected { background: #064e3b; color: #6ee7b7; }
+    .bridge-status.disconnected { background: #1e293b; color: #94a3b8; }
+
+    button {
+      width: 100%;
+      padding: 10px;
+      border: none;
+      border-radius: 8px;
+      background: #3b82f6;
+      color: white;
+      font-weight: 600;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    button:hover { background: #2563eb; }
+    button:active { background: #1d4ed8; }
+    button:disabled { background: #334155; color: #64748b; cursor: default; }
+  </style>
+</head>
+<body>
+  <h1>MCP Cookie Bridge</h1>
+
+  <div id="statusBar" class="status-bar none">
+    <span class="dot red" id="statusDot"></span>
+    <span id="statusText">Checking...</span>
+  </div>
+
+  <ul class="cookie-list" id="cookieList"></ul>
+
+  <div class="meta">
+    Last refresh: <span id="lastRefresh">never</span>
+  </div>
+
+  <div class="meta">
+    Source: <span id="sourceUrl">--</span>
+  </div>
+
+  <div id="bridgeStatus" class="bridge-status disconnected">
+    MCP bridge: not connected
+  </div>
+
+  <button id="refreshBtn">Refresh Now</button>
+
+  <script src="popup.js"></script>
+</body>
+</html>

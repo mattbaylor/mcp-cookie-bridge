@@ -1,0 +1,9 @@
+node_modules/
+dist/
+
+# User-specific config (contains cookie names specific to your project)
+config.json
+extension/config.json
+
+# Persisted cookie data (contains secrets)
+cookies.json
