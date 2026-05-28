@@ -37,11 +37,17 @@ async function readCookies() {
   if (!config) await loadConfig();
   if (!config) return null;
 
+  // Use getAll with domain filter — this finds cookies on ANY path,
+  // unlike chrome.cookies.get which requires the URL path to match.
+  const domain = new URL(config.cookieUrl).hostname;
+  const allCookies = await chrome.cookies.getAll({ domain });
+
   const results = {};
   let allPresent = true;
+  const wantedNames = new Set(config.cookies);
 
   for (const name of config.cookies) {
-    const cookie = await chrome.cookies.get({ url: config.cookieUrl, name });
+    const cookie = allCookies.find((c) => c.name === name);
     if (cookie) {
       results[name] = {
         value: cookie.value,
