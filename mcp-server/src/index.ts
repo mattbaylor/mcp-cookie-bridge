@@ -99,6 +99,14 @@ interface CookiePayload {
 
 let currentPayload: CookiePayload | null = null;
 
+// When the bridge port is already taken by a sibling instance, this process
+// runs in "client mode": it does not bind the HTTP port (the sibling owns
+// extension pushes), but it still serves the MCP stdio interface by proxying
+// each query to the sibling daemon over HTTP. This keeps MCP tools registered
+// across every concurrent client (opencode, Claude Code, ad-hoc CLI), instead
+// of having the second-to-start MCP exit and leave its client toolless.
+let clientMode = false;
+
 // ---------------------------------------------------------------------------
 // Persistence
 // ---------------------------------------------------------------------------
@@ -135,7 +143,7 @@ function loadFromDisk(): CookiePayload | null {
 // HTTP Bridge Server — receives POST /cookies from the Chrome extension
 // ---------------------------------------------------------------------------
 
-function startBridge() {
+function startBridge(): Promise<http.Server | null> {
   const server = http.createServer((req, res) => {
     // CORS for Chrome extension
     res.setHeader("Access-Control-Allow-Origin", "*");
@@ -188,28 +196,56 @@ function startBridge() {
     res.end("Not found");
   });
 
-  server.listen(BRIDGE_PORT, "127.0.0.1", () => {
-    console.error(`Cookie bridge listening on http://127.0.0.1:${BRIDGE_PORT}`);
-  });
+  return new Promise((resolve) => {
+    server.once("listening", () => {
+      console.error(`Cookie bridge listening on http://127.0.0.1:${BRIDGE_PORT}`);
+      resolve(server);
+    });
 
-  server.on("error", (err: NodeJS.ErrnoException) => {
-    if (err.code === "EADDRINUSE") {
-      console.error(
-        `Port ${BRIDGE_PORT} already in use — another instance running?`
-      );
-    } else {
-      console.error("Bridge server error:", err);
-    }
-  });
+    server.once("error", (err: NodeJS.ErrnoException) => {
+      if (err.code === "EADDRINUSE") {
+        // Another instance owns the port and is the one receiving extension
+        // pushes. Don't bind, don't serve stale in-memory cookies — enter
+        // client mode and proxy reads to the surviving daemon over HTTP.
+        // The MCP stdio interface stays alive so this client's tools register.
+        clientMode = true;
+        console.error(
+          `Port ${BRIDGE_PORT} already in use — entering client mode (proxying reads to the surviving daemon).`
+        );
+        resolve(null);
+      } else {
+        console.error("Bridge server error:", err);
+        process.exit(1);
+      }
+    });
 
-  return server;
+    server.listen(BRIDGE_PORT, "127.0.0.1");
+  });
+}
+
+async function fetchPayloadFromDaemon(): Promise<CookiePayload | null> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/cookies`);
+    if (!res.ok) return null;
+    const json = (await res.json()) as CookiePayload | { error: string };
+    if ("error" in json) return null;
+    return json;
+  } catch (err) {
+    console.error("client-mode fetch failed:", err);
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function getPayload(): CookiePayload | null {
+async function getPayload(): Promise<CookiePayload | null> {
+  if (clientMode) {
+    // The sibling daemon is the source of truth in client mode. Always fetch
+    // fresh — never cache locally, otherwise we re-create the zombie problem.
+    return fetchPayloadFromDaemon();
+  }
   if (currentPayload) return currentPayload;
   currentPayload = loadFromDisk();
   return currentPayload;
@@ -265,7 +301,7 @@ mcp.tool(
   `Get the current dev server cookies captured by the Chrome extension. Returns cookie objects with values, freshness info, and warnings. Configured cookies: ${config.cookies.join(", ")}`,
   {},
   async () => {
-    const payload = getPayload();
+    const payload = await getPayload();
     if (!payload) return noDataResponse();
 
     const { ageSeconds, fresh, staleWarning } = freshness(payload);
@@ -293,7 +329,7 @@ mcp.tool(
   "Get a ready-to-use Cookie header string for HTTP requests. Returns the header value in `name=value; name=value` format, suitable for curl or fetch calls.",
   {},
   async () => {
-    const payload = getPayload();
+    const payload = await getPayload();
     if (!payload) return noDataResponse();
 
     const { ageSeconds, fresh, staleWarning } = freshness(payload);
@@ -334,7 +370,7 @@ mcp.tool(
       ),
   },
   async ({ port }) => {
-    const payload = getPayload();
+    const payload = await getPayload();
     if (!payload) return noDataResponse();
 
     const { ageSeconds, fresh, staleWarning } = freshness(payload);
@@ -380,7 +416,7 @@ mcp.tool(
   "Check the health and freshness of the cookie bridge. Reports which cookies are present/missing, how old they are, and whether the Chrome extension is pushing updates.",
   {},
   async () => {
-    const payload = getPayload();
+    const payload = await getPayload();
 
     if (!payload) {
       return {
@@ -423,16 +459,20 @@ mcp.tool(
 // ---------------------------------------------------------------------------
 
 async function main() {
-  // Load any persisted cookies from disk
+  // Load any persisted cookies from disk (used only in server mode; client
+  // mode always proxies to the daemon and ignores local cache).
   currentPayload = loadFromDisk();
 
-  // Start the HTTP bridge for the Chrome extension
-  startBridge();
+  // Try to start the HTTP bridge for the Chrome extension. If the port is
+  // already taken, startBridge() flips us to client mode and returns null.
+  await startBridge();
 
   // Start the MCP stdio server
   const transport = new StdioServerTransport();
   await mcp.connect(transport);
-  console.error("mcp-cookie-bridge MCP server running on stdio");
+  console.error(
+    `mcp-cookie-bridge MCP server running on stdio (${clientMode ? "client" : "server"} mode)`
+  );
 }
 
 main().catch((err) => {
