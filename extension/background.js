@@ -247,7 +247,11 @@ async function keepAliveCheck() {
       : `${minSec}s to expiry (< ${thresholdSec}s) — reloaded ${status.reloaded} tab(s)`;
   }
 
-  console.error('[keep-alive]', status.reason, `(tabsFound=${status.tabsFound}, minSecondsToExpiry=${minSec})`);
+  const logArgs = ['[keep-alive]', status.reason, `(tabsFound=${status.tabsFound}, minSecondsToExpiry=${minSec})`];
+  // Routine status is informational; only "no tab open" is actionable. Neither
+  // is an error, so don't use console.error (keeps the SW error badge clean).
+  if (status.tabsFound === 0) console.warn(...logArgs);
+  else console.log(...logArgs);
   await chrome.storage.local.set({ keepAlive: status });
 
   // Push the status promptly. If we reloaded, the tabs.onUpdated handler will
