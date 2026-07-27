@@ -159,6 +159,7 @@ Log into your dev server in Chrome, then ask your AI assistant:
 | `refreshIntervalMinutes` | number | `2` | How often the extension pushes cookie updates |
 | `requiredCookies` | string[] | all `cookies` | Cookies that must be present for a healthy session; drive the status badge |
 | `bootstrapCookies` | string[] | `[]` | Short-lived cookies (e.g. a BFF session) primed on demand; their absence is not an error. See [Priming the session](#priming-the-session) |
+| `primeClearCookies` | string[] | all `cookies` | Cookies **"Prime session"** deletes to force re-login. Set this to preserve some (e.g. a long-lived device id whose removal triggers a new-device challenge) |
 | `staleAfterSeconds` | number | `600` | Age threshold (seconds) after which cookies are flagged as stale |
 | `targetDomain` | string | `localhost` | Host the cookies are re-targeted to in `get_playwright_cookies` output |
 | `targetPort` | number | `8443` | Port used to build the Playwright `targetUrl` string |
@@ -185,10 +186,13 @@ demand**:
 - When you need one present — right before instantiating a session such as a
   Playwright context — click **"Prime session"** in the extension popup. A plain
   reload does *not* re-mint a bootstrap cookie while the session cookies are still
-  set; it is only issued by the login flow. So Prime **deletes the identified
-  cookies and reloads** the source-host tab, which lands unauthenticated and
-  redirects to login. **Complete the login in that tab** and the full cookie set
-  (bootstrap included) is re-set and harvested automatically.
+  set; it is only issued by the login flow. So Prime **deletes the session
+  cookies (`primeClearCookies`, defaulting to all `cookies`) and reloads** the
+  source-host tab, which lands unauthenticated and redirects to login. **Complete
+  the login in that tab** and the full cookie set (bootstrap included) is re-set
+  and harvested automatically. Use `primeClearCookies` to keep cookies you don't
+  want deleted — e.g. a device id whose removal would trigger a new-device
+  challenge.
 
 `get_playwright_cookies` and `get_cookie_status` include a `primeHint` whenever a
 bootstrap cookie is missing. Priming needs the `cookies` and `tabs` permissions;

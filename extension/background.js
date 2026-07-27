@@ -8,7 +8,7 @@
 // Config loading
 // ---------------------------------------------------------------------------
 
-/** @type {{ cookieUrl: string, bridgePort: number, refreshIntervalMinutes: number, cookies: string[], requiredCookies?: string[], bootstrapCookies?: string[] } | null} */
+/** @type {{ cookieUrl: string, bridgePort: number, refreshIntervalMinutes: number, cookies: string[], requiredCookies?: string[], bootstrapCookies?: string[], primeClearCookies?: string[] } | null} */
 let config = null;
 
 // Cookies that must always be present for the session to be considered healthy.
@@ -25,6 +25,16 @@ function requiredCookieNames() {
 // on demand rather than kept warm. Defaults to none.
 function bootstrapCookieNames() {
   return (config && config.bootstrapCookies) || [];
+}
+
+// Cookies that "Prime session" deletes to force a fresh login. Defaults to all
+// configured cookies; set primeClearCookies to preserve some (e.g. a long-lived
+// device id whose removal would trigger a new-device challenge).
+function primeClearCookieNames() {
+  if (!config) return [];
+  return config.primeClearCookies && config.primeClearCookies.length
+    ? config.primeClearCookies
+    : config.cookies;
 }
 
 async function loadConfig() {
@@ -198,7 +208,7 @@ async function clearConfiguredCookies(host) {
   } catch {
     return 0;
   }
-  const wanted = new Set(config.cookies);
+  const wanted = new Set(primeClearCookieNames());
   let removed = 0;
   for (const c of all) {
     if (!wanted.has(c.name)) continue;

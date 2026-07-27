@@ -42,6 +42,12 @@ interface Config {
    */
   bootstrapCookies?: string[];
   /**
+   * Extension-only: cookies that "Prime session" deletes to force a fresh login.
+   * Defaults to all `cookies`. Set this to preserve some — e.g. a long-lived
+   * device id whose removal would trigger a new-device challenge.
+   */
+  primeClearCookies?: string[];
+  /**
    * Domain the captured cookies are re-targeted to when emitted for Playwright.
    * The source cookies are harvested from cookieUrl's host but applied to this
    * host on the local dev machine. Defaults to "localhost".

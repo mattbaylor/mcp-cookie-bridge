@@ -13,5 +13,9 @@
   ],
   "bootstrapCookies": [
     "session_token"
+  ],
+  "primeClearCookies": [
+    "session_token",
+    "auth_jwt"
   ]
 }
