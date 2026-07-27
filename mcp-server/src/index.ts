@@ -29,6 +29,20 @@ interface Config {
   cookies: string[];
   /** Staleness threshold in seconds. Defaults to 600 (10 min). */
   staleAfterSeconds?: number;
+  /**
+   * Extension-only: how often (minutes) the extension reloads an open source-host
+   * tab to keep a SameSite=Strict remote session alive. 0/absent disables it.
+   * Unused by the server; declared here so the config schema lives in one place.
+   */
+  keepAliveIntervalMinutes?: number;
+  /**
+   * Domain the captured cookies are re-targeted to when emitted for Playwright.
+   * The source cookies are harvested from cookieUrl's host but applied to this
+   * host on the local dev machine. Defaults to "localhost".
+   */
+  targetDomain?: string;
+  /** Port used to build the Playwright targetUrl string. Defaults to 8443. */
+  targetPort?: number;
 }
 
 const CONFIG_SEARCH_PATHS = [
@@ -366,7 +380,7 @@ mcp.tool(
       .max(65535)
       .optional()
       .describe(
-        "Target port for the cookies. Cookies are typically domain-scoped and work across ports. Defaults to the port from the configured cookie URL."
+        "Target port for the Playwright targetUrl. Cookies are domain-scoped and work across ports. Defaults to config.targetPort (8443)."
       ),
   },
   async ({ port }) => {
@@ -374,7 +388,12 @@ mcp.tool(
     if (!payload) return noDataResponse();
 
     const { ageSeconds, fresh, staleWarning } = freshness(payload);
-    const targetPort = port || new URL(config.cookieUrl).port || "443";
+    // Cookies are harvested from the source host (config.cookieUrl) but applied
+    // to the local dev target. Re-target every cookie to config.targetDomain and
+    // normalise the path to "/" so a source cookie scoped to e.g. "/a/" still
+    // applies site-wide on localhost and other dev servers/containers.
+    const targetDomain = config.targetDomain || "localhost";
+    const targetPort = port || config.targetPort || 8443;
 
     const playwrightCookies = config.cookies
       .filter((name) => payload.cookies[name])
@@ -383,8 +402,8 @@ mcp.tool(
         return {
           name,
           value: c.value,
-          domain: "localhost",
-          path: c.path,
+          domain: targetDomain,
+          path: "/",
           httpOnly: c.httpOnly,
           secure: c.secure,
           sameSite: (
@@ -397,7 +416,7 @@ mcp.tool(
     const result: Record<string, unknown> = {
       cookies: playwrightCookies,
       usage: `await context.addCookies(${JSON.stringify(playwrightCookies)})`,
-      targetUrl: `https://localhost:${targetPort}`,
+      targetUrl: `https://${targetDomain}:${targetPort}`,
       ageSeconds,
       fresh,
     };

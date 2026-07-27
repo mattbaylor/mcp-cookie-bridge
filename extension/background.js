@@ -8,7 +8,7 @@
 // Config loading
 // ---------------------------------------------------------------------------
 
-/** @type {{ cookieUrl: string, bridgePort: number, refreshIntervalMinutes: number, cookies: string[] } | null} */
+/** @type {{ cookieUrl: string, bridgePort: number, refreshIntervalMinutes: number, keepAliveIntervalMinutes?: number, cookies: string[] } | null} */
 let config = null;
 
 async function loadConfig() {
@@ -142,11 +142,75 @@ async function setupAlarm() {
   chrome.alarms.create('cookie-refresh', {
     periodInMinutes: interval,
   });
+
+  // Optional keep-alive alarm — only when configured (> 0).
+  const keepAlive = config?.keepAliveIntervalMinutes || 0;
+  if (keepAlive > 0) {
+    chrome.alarms.create('cookie-keepalive', {
+      periodInMinutes: keepAlive,
+    });
+  } else {
+    chrome.alarms.clear('cookie-keepalive');
+  }
 }
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'cookie-refresh') {
     refresh();
+  }
+  if (alarm.name === 'cookie-keepalive') {
+    keepAliveReload();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Keep-alive — reload an open source-host tab so the remote session cookie
+// keeps rotating.
+//
+// The BFF session cookie is SameSite=Strict, so it is only sent on same-site
+// navigations. A background fetch from this service worker is cross-site and
+// would NOT carry the cookie — so the only way to keep the session warm is to
+// reload an actual tab pointed at the source host. We never reload the tab the
+// user is actively working in (the focused window's active tab); their own
+// activity already keeps that one warm.
+// ---------------------------------------------------------------------------
+
+async function keepAliveReload() {
+  if (!config) await loadConfig();
+  if (!config || !config.cookieUrl) return;
+  if (!(config.keepAliveIntervalMinutes > 0)) return;
+
+  const host = new URL(config.cookieUrl).hostname;
+  const tabs = await chrome.tabs.query({ url: `*://${host}/*` });
+  if (!tabs.length) return;
+
+  // Identify the active tab in the focused window so we can skip it.
+  let activeTabId = -1;
+  try {
+    const win = await chrome.windows.getLastFocused();
+    if (win && win.focused) {
+      const [active] = await chrome.tabs.query({ active: true, windowId: win.id });
+      if (active) activeTabId = active.id;
+    }
+  } catch {
+    // No focused window (e.g. Chrome in background) — safe to reload all matches.
+  }
+
+  for (const tab of tabs) {
+    if (tab.id == null || tab.id === activeTabId) continue;
+    chrome.tabs.reload(tab.id);
+  }
+}
+
+// Re-harvest as soon as a source-host tab finishes (re)loading, so the freshly
+// rotated cookies are pushed to the bridge without waiting for the next alarm.
+chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
+  if (changeInfo.status !== 'complete' || !config || !tab.url) return;
+  try {
+    const host = new URL(config.cookieUrl).hostname;
+    if (new URL(tab.url).hostname === host) refresh();
+  } catch {
+    // Ignore non-http(s) tab URLs.
   }
 });
 
@@ -180,10 +244,15 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
 chrome.cookies.onChanged.addListener((changeInfo) => {
   if (!config) return;
-  if (
-    config.cookies.includes(changeInfo.cookie.name) &&
-    changeInfo.cookie.domain === 'localhost'
-  ) {
+  if (!config.cookies.includes(changeInfo.cookie.name)) return;
+
+  // Match the changed cookie against the configured source host instead of a
+  // hardcoded domain. Cookie domains may be host-only ("staging.example.com")
+  // or dot-prefixed domain cookies (".staging.example.com"); normalise the
+  // leading dot and accept the exact host or any subdomain of it.
+  const host = new URL(config.cookieUrl).hostname;
+  const cookieDomain = changeInfo.cookie.domain.replace(/^\./, '');
+  if (cookieDomain === host || cookieDomain.endsWith('.' + host)) {
     refresh();
   }
 });

@@ -43,14 +43,19 @@ cd mcp-cookie-bridge
 cp config.example.json config.json
 ```
 
-Edit `config.json` with your cookie names and dev server URL:
+Edit `config.json` with your cookie names and source/target hosts. Cookies are
+harvested from `cookieUrl`'s host and re-targeted to `targetDomain` so a remote
+session (e.g. a staging site) can be applied to localhost and other dev
+servers/containers:
 
 ```json
 {
-  "cookieUrl": "https://localhost:8443",
+  "cookieUrl": "https://your-source-host.example.com",
   "bridgePort": 18443,
   "refreshIntervalMinutes": 2,
   "staleAfterSeconds": 600,
+  "targetDomain": "localhost",
+  "targetPort": 8443,
   "cookies": [
     "session_token",
     "auth_jwt",
@@ -65,7 +70,19 @@ Also copy the config into the extension directory:
 cp config.json extension/config.json
 ```
 
-### 2. Install the Chrome extension
+### 2. Create the extension manifest
+
+The manifest is user-specific because its `host_permissions` must name the host
+you harvest cookies from, so it is git-ignored. Copy the template:
+
+```bash
+cp extension/manifest.example.json extension/manifest.json
+```
+
+If you harvest from a remote host (not just `localhost`), add it to
+`host_permissions`, e.g. `"https://*.staging.example.com/*"`.
+
+### 3. Install the Chrome extension
 
 1. Open `chrome://extensions/`
 2. Enable **Developer mode** (top-right toggle)
@@ -73,7 +90,7 @@ cp config.json extension/config.json
 4. Select the `extension/` directory
 5. The extension icon should appear with a badge
 
-### 3. Build and configure the MCP server
+### 4. Build and configure the MCP server
 
 ```bash
 cd mcp-server
@@ -81,7 +98,7 @@ npm install
 npm run build
 ```
 
-### 4. Add to your MCP client
+### 5. Add to your MCP client
 
 #### OpenCode (`opencode.json`)
 
@@ -111,7 +128,7 @@ npm run build
 }
 ```
 
-### 5. Use it
+### 6. Use it
 
 Log into your dev server in Chrome, then ask your AI assistant:
 
@@ -126,10 +143,13 @@ Log into your dev server in Chrome, then ask your AI assistant:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `cookieUrl` | string | required | The URL to read cookies from (e.g. `https://localhost:8443`) |
+| `cookieUrl` | string | required | The URL/host to read (harvest) cookies from (e.g. `https://staging.example.com`) |
 | `bridgePort` | number | `18443` | Local port for the HTTP bridge between extension and MCP server |
 | `refreshIntervalMinutes` | number | `2` | How often the extension pushes cookie updates |
+| `keepAliveIntervalMinutes` | number | `0` | How often the extension reloads an open source-host tab to keep a remote session alive. `0` disables it. See [Keeping a remote session alive](#keeping-a-remote-session-alive) |
 | `staleAfterSeconds` | number | `600` | Age threshold (seconds) after which cookies are flagged as stale |
+| `targetDomain` | string | `localhost` | Host the cookies are re-targeted to in `get_playwright_cookies` output |
+| `targetPort` | number | `8443` | Port used to build the Playwright `targetUrl` string |
 | `cookies` | string[] | required | Cookie names to capture |
 
 The config file is searched in this order:
@@ -137,6 +157,21 @@ The config file is searched in this order:
 2. `mcp-server/config.json`
 3. `config.json` (repo root)
 4. `~/.config/mcp-cookie-bridge/config.json`
+
+## Keeping a remote session alive
+
+When you harvest from a remote host (e.g. a staging site) whose session cookie
+is short-lived, the session will expire if the tab sits idle. Set
+`keepAliveIntervalMinutes` to have the extension periodically reload an open tab
+pointed at `cookieUrl`'s host, which re-bootstraps auth and rotates the session
+cookie; the fresh cookies are then re-harvested automatically.
+
+This works via a tab reload rather than a background request on purpose:
+`SameSite=Strict` session cookies are only sent on same-site navigations, so a
+`fetch()` from the extension's service worker (a cross-site context) would not
+carry the cookie. The reload **skips the active tab in your focused window** — a
+tab you're actively using is kept warm by your own activity — so keep a
+dedicated background tab open on the source host for this to have an effect.
 
 ## MCP Tools
 
@@ -152,7 +187,7 @@ The config file is searched in this order:
 - Cookies are stored in Chrome extension storage and in `~/.config/mcp-cookie-bridge/cookies.json`
 - The HTTP bridge listens only on `127.0.0.1` (loopback) — not exposed to the network
 - `config.json` and `cookies.json` are `.gitignore`d to prevent leaking secrets
-- The extension only requests `host_permissions` for `localhost`
+- The extension requests `host_permissions` for `localhost` and the configured source host (e.g. `*.staging.example.com`)
 
 ## License
 

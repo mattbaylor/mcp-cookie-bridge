@@ -5,5 +5,8 @@ dist/
 config.json
 extension/config.json
 
+# User-specific extension manifest (host_permissions name your source host)
+extension/manifest.json
+
 # Persisted cookie data (contains secrets)
 cookies.json
