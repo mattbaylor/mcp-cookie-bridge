@@ -175,12 +175,20 @@ use keeps the session far from expiry). When it is at risk, every open
 source-host tab is reloaded — including the focused one, since an idle near-expiry
 tab is safe to reload.
 
-This works via a tab reload rather than a background request on purpose:
-`SameSite=Strict` session cookies are only sent on same-site navigations, so a
-`fetch()` from the extension's service worker (a cross-site context) would not
-carry the cookie. **Keep a dedicated tab open on the source host** for keep-alive
-to have anything to reload — it cannot revive a session once fully expired
-(re-login is expected, e.g. daily).
+The keep-alive clock lives in a **content script** injected into the source-host
+tab, not in the background service worker. This is deliberate: MV3 service
+workers are suspended when idle and their `chrome.alarms` can stall, so a
+worker-driven timer is unreliable — a page timer is not. On each tick the content
+script makes a **same-origin, credentialed `fetch()`** of the current page, which
+(unlike a service-worker fetch, which is cross-site and would drop a
+`SameSite=Strict` cookie) carries the session cookie and lets the server slide
+the session forward with **no page reload**. It also wakes the service worker to
+re-harvest; the worker's expiry-based tab reload remains as a backstop.
+
+**Keep a dedicated tab open on the source host** — the content script only runs
+while such a tab is open, and keep-alive cannot revive a session once fully
+expired (re-login is expected, e.g. daily). This requires the `scripting`
+permission (to inject the content script) in addition to `tabs`.
 
 **Confirming it works:** open the extension popup — the **Keep-alive** line shows
 the last check time, how many source-host tabs were found, minutes of session

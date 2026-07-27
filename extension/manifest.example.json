@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
   "name": "MCP Cookie Bridge",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Captures browser cookies and bridges them to an MCP server for AI-assisted local development workflows.",
   "permissions": [
     "cookies",
     "storage",
     "alarms",
-    "tabs"
+    "tabs",
+    "scripting"
   ],
   "host_permissions": [
     "https://localhost/*",

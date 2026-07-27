@@ -261,6 +261,57 @@ async function keepAliveCheck() {
   return status;
 }
 
+// Register (and inject into already-open tabs) the keep-alive content script for
+// the configured source host. The content script is the reliable clock — MV3
+// service-worker alarms stall when the worker is suspended, but a page timer does
+// not. Keyed off config so the manifest stays host-agnostic.
+async function setupKeepAliveContentScript() {
+  if (!config || !config.cookieUrl) return;
+  if (!chrome.scripting || !chrome.scripting.registerContentScripts) return;
+
+  const host = new URL(config.cookieUrl).hostname;
+  const matches = [`*://${host}/*`];
+
+  // Always clear any previous registration first (host may have changed).
+  try {
+    await chrome.scripting.unregisterContentScripts({ ids: ['keepalive'] });
+  } catch {
+    // Nothing registered yet — fine.
+  }
+
+  if (!(config.keepAliveIntervalMinutes > 0)) return; // disabled
+
+  try {
+    await chrome.scripting.registerContentScripts([
+      {
+        id: 'keepalive',
+        js: ['keepalive.js'],
+        matches,
+        runAt: 'document_idle',
+        persistAcrossSessions: true,
+      },
+    ]);
+  } catch (e) {
+    console.warn('[keep-alive] could not register content script:', e.message);
+    return;
+  }
+
+  // registerContentScripts only affects future navigations — inject into any
+  // matching tab that is already open so keep-alive starts immediately.
+  try {
+    const tabs = await chrome.tabs.query({ url: matches });
+    for (const tab of tabs) {
+      if (tab.id != null) {
+        chrome.scripting
+          .executeScript({ target: { tabId: tab.id }, files: ['keepalive.js'] })
+          .catch(() => {});
+      }
+    }
+  } catch {
+    // tabs.query/executeScript unavailable — future navigations still covered.
+  }
+}
+
 // Re-harvest as soon as a source-host tab finishes (re)loading, so the freshly
 // rotated cookies are pushed to the bridge without waiting for the next alarm.
 chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
@@ -295,6 +346,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     })();
     return true;
   }
+  if (msg.type === 'keepalive-tick') {
+    // Driven by the content-script clock (reliable while the tab is open, unlike
+    // the service-worker alarm). Re-harvest + run the expiry-based backstop.
+    keepAliveCheck();
+    return false;
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -328,6 +385,7 @@ async function init() {
     return;
   }
   await setupAlarm();
+  await setupKeepAliveContentScript();
   await refresh();
 }
 
