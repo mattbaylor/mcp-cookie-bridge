@@ -1,5 +1,6 @@
 {
   "cookieUrl": "https://your-source-host.example.com",
+  "loginUrl": "https://your-source-host.example.com/login",
   "bridgePort": 18443,
   "refreshIntervalMinutes": 2,
   "cookies": [

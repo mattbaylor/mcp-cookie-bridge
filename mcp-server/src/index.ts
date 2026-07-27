@@ -24,6 +24,11 @@ import * as os from "node:os";
 
 interface Config {
   cookieUrl: string;
+  /**
+   * Extension-only: URL that "Prime session" navigates to after clearing cookies,
+   * to force a clean login. Defaults to cookieUrl when omitted.
+   */
+  loginUrl?: string;
   bridgePort: number;
   refreshIntervalMinutes: number;
   cookies: string[];
