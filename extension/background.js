@@ -177,15 +177,43 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 // ---------------------------------------------------------------------------
-// Prime — mint a fresh bootstrap session on demand
+// Prime — force a fresh login so the full cookie set (incl. the short-lived
+// bootstrap/BFF cookie) is re-minted.
 //
-// Bootstrap cookies (e.g. a BFF session) are short-lived and expire on their
-// own even while the underlying login is still valid. Rather than fight that
-// with a background loop, we prime a fresh one on demand: reload an open
-// source-host tab so the app re-bootstraps and mints a new session cookie, wait
-// for it to load, then harvest. Call this right before instantiating a session
-// (e.g. a Playwright context) that needs the bootstrap cookie present.
+// A plain reload with the session cookies still set does NOT re-mint the
+// bootstrap cookie — it is only issued by going through the login flow. So Prime
+// deletes the identified cookies and reloads the source-host tab: the app lands
+// unauthenticated and redirects to login. Once you complete login in that tab,
+// the cookies are re-set and harvested automatically (via the cookie-change and
+// tab-load listeners). Run this right before instantiating a session (e.g. a
+// Playwright context) that needs the bootstrap cookie present.
 // ---------------------------------------------------------------------------
+
+async function clearConfiguredCookies(host) {
+  // Look up the real cookie objects so we can build correct removal URLs, then
+  // remove each cookie this config tracks.
+  let all = [];
+  try {
+    all = await chrome.cookies.getAll({ domain: host });
+  } catch {
+    return 0;
+  }
+  const wanted = new Set(config.cookies);
+  let removed = 0;
+  for (const c of all) {
+    if (!wanted.has(c.name)) continue;
+    const scheme = c.secure ? 'https' : 'http';
+    const cookieHost = c.domain.replace(/^\./, ''); // domain cookies are dot-prefixed
+    const url = `${scheme}://${cookieHost}${c.path}`;
+    try {
+      await chrome.cookies.remove({ url, name: c.name });
+      removed++;
+    } catch {
+      // Best effort — keep going.
+    }
+  }
+  return removed;
+}
 
 async function primeSession() {
   if (!config) await loadConfig();
@@ -196,38 +224,21 @@ async function primeSession() {
   if (!tabs.length) {
     return {
       ok: false,
-      error: `No ${host} tab is open. Open one and log in, then prime again.`,
+      error: `No ${host} tab is open. Open one, then prime.`,
     };
   }
 
-  const primaryTabId = tabs[0].id;
+  // Delete the identified cookies so the reload lands unauthenticated.
+  const cleared = await clearConfiguredCookies(host);
 
-  // Reload the tab(s) and wait for the primary one to finish loading.
-  await new Promise((resolve) => {
-    let done = false;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      chrome.tabs.onUpdated.removeListener(onUpdated);
-      resolve();
-    };
-    function onUpdated(id, info) {
-      if (id === primaryTabId && info.status === 'complete') finish();
-    }
-    chrome.tabs.onUpdated.addListener(onUpdated);
-    for (const t of tabs) if (t.id != null) chrome.tabs.reload(t.id);
-    // Safety net if the 'complete' event is missed.
-    setTimeout(finish, 15000);
-  });
+  // Reload so the app redirects to login. We do NOT wait for a bootstrapped
+  // session here — login is interactive; the cookie-change/tab-load listeners
+  // harvest automatically once you finish logging in.
+  for (const t of tabs) if (t.id != null) chrome.tabs.reload(t.id);
 
-  // Give the app a moment to run its auth bootstrap and set the cookie.
-  await new Promise((r) => setTimeout(r, 1500));
-
-  const payload = await refresh();
-  const bootstrap = bootstrapCookieNames();
-  const bootstrapPresent = bootstrap.every((name) => payload && payload.cookies[name]);
-  console.log('[prime]', `reloaded ${tabs.length} tab(s) on ${host}; bootstrap present: ${bootstrapPresent}`);
-  return { ok: true, bootstrapPresent, payload };
+  const payload = await refresh(); // reflects the cleared state immediately
+  console.log('[prime]', `cleared ${cleared} cookie(s) on ${host} and reloaded — complete login in the tab`);
+  return { ok: true, cleared, needsLogin: true, payload };
 }
 
 // Re-harvest as soon as a source-host tab finishes (re)loading, so freshly

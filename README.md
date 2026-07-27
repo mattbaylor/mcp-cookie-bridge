@@ -183,15 +183,16 @@ demand**:
   unhealthy — the status badge and `get_cookie_status` are driven by
   `requiredCookies` (e.g. the login/device cookies) only.
 - When you need one present — right before instantiating a session such as a
-  Playwright context — click **"Prime session"** in the extension popup. It
-  reloads your source-host tab so the app re-bootstraps and mints a fresh
-  bootstrap cookie, waits for the load, and harvests. `get_playwright_cookies`
-  and `get_cookie_status` include a `primeHint` telling you to do this whenever a
-  bootstrap cookie is missing.
+  Playwright context — click **"Prime session"** in the extension popup. A plain
+  reload does *not* re-mint a bootstrap cookie while the session cookies are still
+  set; it is only issued by the login flow. So Prime **deletes the identified
+  cookies and reloads** the source-host tab, which lands unauthenticated and
+  redirects to login. **Complete the login in that tab** and the full cookie set
+  (bootstrap included) is re-set and harvested automatically.
 
-**Keep a tab open on the source host and stay logged in** — priming reloads that
-tab; it cannot revive a session once the underlying login has fully expired
-(re-login is expected, e.g. daily). Priming needs the `tabs` permission.
+`get_playwright_cookies` and `get_cookie_status` include a `primeHint` whenever a
+bootstrap cookie is missing. Priming needs the `cookies` and `tabs` permissions;
+keep a source-host tab open.
 
 ## MCP Tools
 

@@ -128,11 +128,9 @@ document.getElementById('primeBtn').addEventListener('click', () => {
       primeStatus.textContent = (res && res.error) || 'Prime failed';
       return;
     }
-    primeStatus.style.color = res.bootstrapPresent ? '#6ee7b7' : '#fdba74';
-    primeStatus.textContent = res.bootstrapPresent
-      ? 'Primed — bootstrap session minted'
-      : 'Reloaded, but bootstrap cookie still missing (are you logged in?)';
-    // Re-render with the freshly harvested payload.
+    primeStatus.style.color = '#93c5fd';
+    primeStatus.textContent = `Cleared ${res.cleared} cookie(s) & reloaded — log in in the tab; cookies capture automatically.`;
+    // Re-render with the (now-cleared) payload; login will update it live.
     Promise.all([
       new Promise((resolve) => chrome.runtime.sendMessage({ type: 'getConfig' }, resolve)),
       new Promise((resolve) => chrome.runtime.sendMessage({ type: 'getState' }, resolve)),

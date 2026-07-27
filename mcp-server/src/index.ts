@@ -445,7 +445,7 @@ mcp.tool(
       // Bootstrap cookies must be present at instantiation but expire on their
       // own — tell the caller to prime rather than treating this as broken.
       result.missingBootstrap = missingBootstrap;
-      result.primeHint = `Bootstrap cookie(s) ${missingBootstrap.join(", ")} are not present. They expire on their own; click "Prime session" in the MCP Cookie Bridge extension (or reload your ${new URL(config.cookieUrl).hostname} tab), then call this tool again before creating the Playwright context.`;
+      result.primeHint = `Bootstrap cookie(s) ${missingBootstrap.join(", ")} are not present. They are only re-minted by logging in again — click "Prime session" in the MCP Cookie Bridge extension (it clears the session cookies and reloads the ${new URL(config.cookieUrl).hostname} tab so you can log in), complete login, then call this tool again before creating the Playwright context.`;
     }
 
     return {
@@ -500,7 +500,7 @@ mcp.tool(
       ...(staleWarning ? { warning: staleWarning } : {}),
       ...(missingBootstrap.length
         ? {
-            primeHint: `Bootstrap cookie(s) ${missingBootstrap.join(", ")} absent (normal — they expire). Prime before use: click "Prime session" in the extension or reload your source-host tab.`,
+            primeHint: `Bootstrap cookie(s) ${missingBootstrap.join(", ")} absent (normal — they expire). To get one, click "Prime session" in the extension (clears the session cookies and reloads so you can log in again), then complete login.`,
           }
         : {}),
     };
