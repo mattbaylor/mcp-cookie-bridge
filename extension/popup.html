@@ -88,6 +88,11 @@
     button:hover { background: #2563eb; }
     button:active { background: #1d4ed8; }
     button:disabled { background: #334155; color: #64748b; cursor: default; }
+    button.secondary { background: #1e293b; color: #cbd5e1; margin-top: 8px; }
+    button.secondary:hover { background: #334155; }
+
+    .cookie-bootstrap { color: #64748b; font-style: italic; }
+    .cookie-optional-tag { color: #64748b; font-size: 10px; margin-left: 6px; }
   </style>
 </head>
 <body>
@@ -108,15 +113,14 @@
     Source: <span id="sourceUrl">--</span>
   </div>
 
-  <div class="meta">
-    Keep-alive: <span id="keepAliveText">--</span>
-  </div>
-
   <div id="bridgeStatus" class="bridge-status disconnected">
     MCP bridge: not connected
   </div>
 
-  <button id="refreshBtn">Refresh Now</button>
+  <button id="primeBtn">Prime session</button>
+  <div id="primeStatus" class="meta" style="margin-top: 8px; margin-bottom: 0;"></div>
+
+  <button id="refreshBtn" class="secondary">Refresh Now</button>
 
   <script src="popup.js"></script>
 </body>

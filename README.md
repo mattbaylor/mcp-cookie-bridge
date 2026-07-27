@@ -60,9 +60,20 @@ servers/containers:
     "session_token",
     "auth_jwt",
     "device_id"
+  ],
+  "requiredCookies": [
+    "auth_jwt",
+    "device_id"
+  ],
+  "bootstrapCookies": [
+    "session_token"
   ]
 }
 ```
+
+`requiredCookies` drive session health; `bootstrapCookies` are short-lived tokens
+that expire on their own and are [primed on demand](#priming-the-session) rather
+than kept warm. Anything in `cookies` but neither list is treated as required.
 
 Also copy the config into the extension directory:
 
@@ -146,8 +157,8 @@ Log into your dev server in Chrome, then ask your AI assistant:
 | `cookieUrl` | string | required | The URL/host to read (harvest) cookies from (e.g. `https://staging.example.com`) |
 | `bridgePort` | number | `18443` | Local port for the HTTP bridge between extension and MCP server |
 | `refreshIntervalMinutes` | number | `2` | How often the extension pushes cookie updates |
-| `keepAliveIntervalMinutes` | number | `0` | How often the extension checks the session and, if at risk, reloads an open source-host tab to keep it alive. `0` disables it. See [Keeping a remote session alive](#keeping-a-remote-session-alive) |
-| `keepAliveThresholdSeconds` | number | `300` | Reload the source-host tab(s) when the soonest cookie expiry is within this many seconds |
+| `requiredCookies` | string[] | all `cookies` | Cookies that must be present for a healthy session; drive the status badge |
+| `bootstrapCookies` | string[] | `[]` | Short-lived cookies (e.g. a BFF session) primed on demand; their absence is not an error. See [Priming the session](#priming-the-session) |
 | `staleAfterSeconds` | number | `600` | Age threshold (seconds) after which cookies are flagged as stale |
 | `targetDomain` | string | `localhost` | Host the cookies are re-targeted to in `get_playwright_cookies` output |
 | `targetPort` | number | `8443` | Port used to build the Playwright `targetUrl` string |
@@ -159,43 +170,28 @@ The config file is searched in this order:
 3. `config.json` (repo root)
 4. `~/.config/mcp-cookie-bridge/config.json`
 
-## Keeping a remote session alive
+## Priming the session
 
-When you harvest from a remote host (e.g. a staging site) whose session cookie
-is short-lived, the session will expire if the tab sits idle. Set
-`keepAliveIntervalMinutes` (> 0) to have the extension periodically **check** the
-session and, only when it is at risk, reload an open tab pointed at `cookieUrl`'s
-host — which re-bootstraps auth and rotates the session cookie. The fresh cookies
-are then re-harvested automatically.
+Some auth setups issue a short-lived **bootstrap** cookie (e.g. a BFF session)
+that the app mints on load and that expires on its own — often within minutes —
+*even while the underlying login is still valid*. Trying to keep such a cookie
+warm with a background loop is the wrong model (and, via repeated tab reloads,
+can misbehave). Instead this extension treats bootstrap cookies as **primed on
+demand**:
 
-"At risk" means either a configured cookie is missing, or the soonest cookie
-expiry is within `keepAliveThresholdSeconds`. When the session is healthy the
-extension does nothing, so a tab you're actively using is never disturbed (active
-use keeps the session far from expiry). When it is at risk, every open
-source-host tab is reloaded — including the focused one, since an idle near-expiry
-tab is safe to reload.
+- List them in `bootstrapCookies`. Their absence does **not** mark the session
+  unhealthy — the status badge and `get_cookie_status` are driven by
+  `requiredCookies` (e.g. the login/device cookies) only.
+- When you need one present — right before instantiating a session such as a
+  Playwright context — click **"Prime session"** in the extension popup. It
+  reloads your source-host tab so the app re-bootstraps and mints a fresh
+  bootstrap cookie, waits for the load, and harvests. `get_playwright_cookies`
+  and `get_cookie_status` include a `primeHint` telling you to do this whenever a
+  bootstrap cookie is missing.
 
-The keep-alive clock lives in a **content script** injected into the source-host
-tab, not in the background service worker. This is deliberate: MV3 service
-workers are suspended when idle and their `chrome.alarms` can stall, so a
-worker-driven timer is unreliable — a page timer is not. On each tick the content
-script makes a **same-origin, credentialed `fetch()`** of the current page, which
-(unlike a service-worker fetch, which is cross-site and would drop a
-`SameSite=Strict` cookie) carries the session cookie and lets the server slide
-the session forward with **no page reload**. It also wakes the service worker to
-re-harvest; the worker's expiry-based tab reload remains as a backstop.
-
-**Keep a dedicated tab open on the source host** — the content script only runs
-while such a tab is open, and keep-alive cannot revive a session once fully
-expired (re-login is expected, e.g. daily). This requires the `scripting`
-permission (to inject the content script) in addition to `tabs`.
-
-**Confirming it works:** open the extension popup — the **Keep-alive** line shows
-the last check time, how many source-host tabs were found, minutes of session
-life left, and whether it reloaded (it turns amber if enabled but no tab is
-open). The same status is included in the `get_cookie_status` MCP tool output,
-and detailed lines are logged to the extension's service-worker console
-(`chrome://extensions/` → the extension → *Inspect views: service worker*).
+**Keep a tab open on the source host and stay logged in** — priming reloads that
+tab; it cannot revive a session once the underlying login has fully expired
+(re-login is expected, e.g. daily). Priming needs the `tabs` permission.
 
 ## MCP Tools
 

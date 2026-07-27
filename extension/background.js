@@ -8,8 +8,24 @@
 // Config loading
 // ---------------------------------------------------------------------------
 
-/** @type {{ cookieUrl: string, bridgePort: number, refreshIntervalMinutes: number, keepAliveIntervalMinutes?: number, keepAliveThresholdSeconds?: number, cookies: string[] } | null} */
+/** @type {{ cookieUrl: string, bridgePort: number, refreshIntervalMinutes: number, cookies: string[], requiredCookies?: string[], bootstrapCookies?: string[] } | null} */
 let config = null;
+
+// Cookies that must always be present for the session to be considered healthy.
+// Defaults to all configured cookies when not specified.
+function requiredCookieNames() {
+  if (!config) return [];
+  return config.requiredCookies && config.requiredCookies.length
+    ? config.requiredCookies
+    : config.cookies;
+}
+
+// Short-lived "bootstrap" cookies (e.g. a BFF session) that are minted when the
+// app loads and expire on their own. Their absence is normal — they are primed
+// on demand rather than kept warm. Defaults to none.
+function bootstrapCookieNames() {
+  return (config && config.bootstrapCookies) || [];
+}
 
 async function loadConfig() {
   try {
@@ -44,7 +60,6 @@ async function readCookies() {
 
   const results = {};
   let allPresent = true;
-  const wantedNames = new Set(config.cookies);
 
   for (const name of config.cookies) {
     const cookie = allCookies.find((c) => c.name === name);
@@ -64,9 +79,14 @@ async function readCookies() {
     }
   }
 
+  // Health is driven by the *required* cookies. Bootstrap cookies (e.g. a BFF
+  // session) are allowed to be absent — they are primed on demand.
+  const requiredPresent = requiredCookieNames().every((name) => results[name]);
+
   return {
     cookies: results,
     allPresent,
+    requiredPresent,
     timestamp: new Date().toISOString(),
     cookieUrl: config.cookieUrl,
   };
@@ -102,14 +122,6 @@ async function refresh() {
   const payload = await readCookies();
   if (!payload) return null;
 
-  // Attach the latest keep-alive status so it rides along to the bridge/popup.
-  try {
-    const { keepAlive } = await chrome.storage.local.get('keepAlive');
-    if (keepAlive) payload.keepAlive = keepAlive;
-  } catch {
-    // storage unavailable — non-fatal
-  }
-
   // Always persist to extension storage (popup reads this)
   await chrome.storage.local.set({ lastPayload: payload });
 
@@ -128,13 +140,16 @@ async function refresh() {
 function updateBadge(payload) {
   if (!config) return;
 
-  const total = config.cookies.length;
-  if (payload.allPresent) {
+  // Badge reflects the required cookies (bootstrap cookies are primed on demand
+  // and expected to come and go, so they must not turn the badge red).
+  const required = requiredCookieNames();
+  const presentRequired = required.filter((name) => payload.cookies[name]).length;
+
+  if (payload.requiredPresent) {
     chrome.action.setBadgeText({ text: 'OK' });
     chrome.action.setBadgeBackgroundColor({ color: '#22c55e' });
   } else {
-    const count = Object.values(payload.cookies).filter((c) => c !== null).length;
-    chrome.action.setBadgeText({ text: `${count}/${total}` });
+    chrome.action.setBadgeText({ text: `${presentRequired}/${required.length}` });
     chrome.action.setBadgeBackgroundColor({ color: '#ef4444' });
   }
 }
@@ -151,169 +166,72 @@ async function setupAlarm() {
     periodInMinutes: interval,
   });
 
-  // Optional keep-alive alarm — only when configured (> 0).
-  const keepAlive = config?.keepAliveIntervalMinutes || 0;
-  if (keepAlive > 0) {
-    chrome.alarms.create('cookie-keepalive', {
-      periodInMinutes: keepAlive,
-    });
-  } else {
-    chrome.alarms.clear('cookie-keepalive');
-  }
+  // Clear any legacy keep-alive alarm from older versions.
+  chrome.alarms.clear('cookie-keepalive');
 }
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'cookie-refresh') {
     refresh();
   }
-  if (alarm.name === 'cookie-keepalive') {
-    keepAliveCheck();
-  }
 });
 
 // ---------------------------------------------------------------------------
-// Keep-alive — reload an open source-host tab so a short-lived remote session
-// cookie keeps rotating.
+// Prime — mint a fresh bootstrap session on demand
 //
-// The session cookie is typically SameSite=Strict, so it is only sent on
-// same-site navigations. A background fetch from this service worker is
-// cross-site and would NOT carry the cookie — so the only way to keep the
-// session warm is to reload an actual tab pointed at the source host.
-//
-// This runs on every keep-alive alarm as a *check*: it reloads only when the
-// session is actually at risk — either a configured cookie is missing, or the
-// soonest cookie expiry is within keepAliveThresholdSeconds. When healthy it
-// does nothing (and, in particular, never disturbs a tab you're actively using,
-// because active use keeps the session far from expiry). When at risk it
-// reloads every open source-host tab, including the focused one — if you were
-// actively using it the session wouldn't be near expiry, so an idle reload is
-// safe. Status is recorded to storage (and pushed to the bridge) for
-// observability.
+// Bootstrap cookies (e.g. a BFF session) are short-lived and expire on their
+// own even while the underlying login is still valid. Rather than fight that
+// with a background loop, we prime a fresh one on demand: reload an open
+// source-host tab so the app re-bootstraps and mints a new session cookie, wait
+// for it to load, then harvest. Call this right before instantiating a session
+// (e.g. a Playwright context) that needs the bootstrap cookie present.
 // ---------------------------------------------------------------------------
 
-async function keepAliveCheck() {
+async function primeSession() {
   if (!config) await loadConfig();
-  if (!config || !config.cookieUrl) return null;
-  if (!(config.keepAliveIntervalMinutes > 0)) return null;
+  if (!config || !config.cookieUrl) return { ok: false, error: 'No config loaded' };
 
-  const thresholdSec = config.keepAliveThresholdSeconds || 300;
   const host = new URL(config.cookieUrl).hostname;
-
-  /** @type {{lastRunAt:string, host:string, tabsFound:number, reloaded:number, minSecondsToExpiry:(number|null), thresholdSeconds:number, reason:string}} */
-  const status = {
-    lastRunAt: new Date().toISOString(),
-    host,
-    tabsFound: 0,
-    reloaded: 0,
-    minSecondsToExpiry: null,
-    thresholdSeconds: thresholdSec,
-    reason: '',
-  };
-
   const tabs = await chrome.tabs.query({ url: `*://${host}/*` });
-  status.tabsFound = tabs.length;
-
-  // Determine the soonest expiry among present, dated cookies.
-  const payload = await readCookies();
-  let minRemainingMs = Infinity;
-  if (payload) {
-    for (const name of config.cookies) {
-      const c = payload.cookies[name];
-      if (c && c.expirationDate) {
-        minRemainingMs = Math.min(minRemainingMs, c.expirationDate * 1000 - Date.now());
-      }
-    }
-  }
-  const minSec = Number.isFinite(minRemainingMs) ? Math.round(minRemainingMs / 1000) : null;
-  status.minSecondsToExpiry = minSec;
-
-  const anyMissing = !payload || !payload.allPresent;
-  const nearExpiry = minSec !== null && minSec < thresholdSec;
-  const needReload = anyMissing || nearExpiry;
-
   if (!tabs.length) {
-    status.reason = 'no source-host tab open — cannot keep the session alive';
-  } else if (!needReload) {
-    status.reason = `healthy — ${minSec}s to expiry (>= ${thresholdSec}s), no reload`;
-  } else {
-    for (const tab of tabs) {
-      if (tab.id != null) {
-        chrome.tabs.reload(tab.id);
-        status.reloaded++;
-      }
-    }
-    status.reason = anyMissing
-      ? `cookie(s) missing — reloaded ${status.reloaded} tab(s) to re-establish session`
-      : `${minSec}s to expiry (< ${thresholdSec}s) — reloaded ${status.reloaded} tab(s)`;
+    return {
+      ok: false,
+      error: `No ${host} tab is open. Open one and log in, then prime again.`,
+    };
   }
 
-  const logArgs = ['[keep-alive]', status.reason, `(tabsFound=${status.tabsFound}, minSecondsToExpiry=${minSec})`];
-  // Routine status is informational; only "no tab open" is actionable. Neither
-  // is an error, so don't use console.error (keeps the SW error badge clean).
-  if (status.tabsFound === 0) console.warn(...logArgs);
-  else console.log(...logArgs);
-  await chrome.storage.local.set({ keepAlive: status });
+  const primaryTabId = tabs[0].id;
 
-  // Push the status promptly. If we reloaded, the tabs.onUpdated handler will
-  // also refresh once the reload completes with the rotated cookies.
-  if (!status.reloaded) refresh();
+  // Reload the tab(s) and wait for the primary one to finish loading.
+  await new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      resolve();
+    };
+    function onUpdated(id, info) {
+      if (id === primaryTabId && info.status === 'complete') finish();
+    }
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    for (const t of tabs) if (t.id != null) chrome.tabs.reload(t.id);
+    // Safety net if the 'complete' event is missed.
+    setTimeout(finish, 15000);
+  });
 
-  return status;
+  // Give the app a moment to run its auth bootstrap and set the cookie.
+  await new Promise((r) => setTimeout(r, 1500));
+
+  const payload = await refresh();
+  const bootstrap = bootstrapCookieNames();
+  const bootstrapPresent = bootstrap.every((name) => payload && payload.cookies[name]);
+  console.log('[prime]', `reloaded ${tabs.length} tab(s) on ${host}; bootstrap present: ${bootstrapPresent}`);
+  return { ok: true, bootstrapPresent, payload };
 }
 
-// Register (and inject into already-open tabs) the keep-alive content script for
-// the configured source host. The content script is the reliable clock — MV3
-// service-worker alarms stall when the worker is suspended, but a page timer does
-// not. Keyed off config so the manifest stays host-agnostic.
-async function setupKeepAliveContentScript() {
-  if (!config || !config.cookieUrl) return;
-  if (!chrome.scripting || !chrome.scripting.registerContentScripts) return;
-
-  const host = new URL(config.cookieUrl).hostname;
-  const matches = [`*://${host}/*`];
-
-  // Always clear any previous registration first (host may have changed).
-  try {
-    await chrome.scripting.unregisterContentScripts({ ids: ['keepalive'] });
-  } catch {
-    // Nothing registered yet — fine.
-  }
-
-  if (!(config.keepAliveIntervalMinutes > 0)) return; // disabled
-
-  try {
-    await chrome.scripting.registerContentScripts([
-      {
-        id: 'keepalive',
-        js: ['keepalive.js'],
-        matches,
-        runAt: 'document_idle',
-        persistAcrossSessions: true,
-      },
-    ]);
-  } catch (e) {
-    console.warn('[keep-alive] could not register content script:', e.message);
-    return;
-  }
-
-  // registerContentScripts only affects future navigations — inject into any
-  // matching tab that is already open so keep-alive starts immediately.
-  try {
-    const tabs = await chrome.tabs.query({ url: matches });
-    for (const tab of tabs) {
-      if (tab.id != null) {
-        chrome.scripting
-          .executeScript({ target: { tabId: tab.id }, files: ['keepalive.js'] })
-          .catch(() => {});
-      }
-    }
-  } catch {
-    // tabs.query/executeScript unavailable — future navigations still covered.
-  }
-}
-
-// Re-harvest as soon as a source-host tab finishes (re)loading, so the freshly
-// rotated cookies are pushed to the bridge without waiting for the next alarm.
+// Re-harvest as soon as a source-host tab finishes (re)loading, so freshly
+// minted cookies are pushed to the bridge without waiting for the next alarm.
 chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
   if (changeInfo.status !== 'complete' || !config || !tab.url) return;
   try {
@@ -346,11 +264,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     })();
     return true;
   }
-  if (msg.type === 'keepalive-tick') {
-    // Driven by the content-script clock (reliable while the tab is open, unlike
-    // the service-worker alarm). Re-harvest + run the expiry-based backstop.
-    keepAliveCheck();
-    return false;
+  if (msg.type === 'prime') {
+    primeSession().then(sendResponse);
+    return true; // async response
   }
 });
 
@@ -385,7 +301,6 @@ async function init() {
     return;
   }
   await setupAlarm();
-  await setupKeepAliveContentScript();
   await refresh();
 }
 

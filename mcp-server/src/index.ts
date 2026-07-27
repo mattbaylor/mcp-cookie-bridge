@@ -30,17 +30,17 @@ interface Config {
   /** Staleness threshold in seconds. Defaults to 600 (10 min). */
   staleAfterSeconds?: number;
   /**
-   * Extension-only: how often (minutes) the extension checks the session and,
-   * if it is at risk, reloads an open source-host tab to keep a SameSite=Strict
-   * remote session alive. 0/absent disables it. Unused by the server; declared
-   * here so the config schema lives in one place.
+   * Cookies that must be present for the session to be considered healthy.
+   * Defaults to all `cookies` when omitted.
    */
-  keepAliveIntervalMinutes?: number;
+  requiredCookies?: string[];
   /**
-   * Extension-only: reload the source-host tab(s) when the soonest cookie expiry
-   * is within this many seconds. Defaults to 300.
+   * Short-lived "bootstrap" cookies (e.g. a BFF session) that are minted when the
+   * app loads and expire on their own. Their absence is not a health problem —
+   * they are primed on demand (reload the source tab) right before a session that
+   * needs them, e.g. a Playwright context.
    */
-  keepAliveThresholdSeconds?: number;
+  bootstrapCookies?: string[];
   /**
    * Domain the captured cookies are re-targeted to when emitted for Playwright.
    * The source cookies are harvested from cookieUrl's host but applied to this
@@ -109,24 +109,23 @@ interface CookieEntry {
   expirationDate: number | null;
 }
 
-interface KeepAliveStatus {
-  lastRunAt: string;
-  host: string;
-  tabsFound: number;
-  reloaded: number;
-  minSecondsToExpiry: number | null;
-  thresholdSeconds: number;
-  reason: string;
-}
-
 interface CookiePayload {
   cookies: Record<string, CookieEntry | null>;
   allPresent: boolean;
+  /** True when all required cookies are present (bootstrap cookies may be absent). */
+  requiredPresent?: boolean;
   timestamp: string;
   cookieUrl?: string;
   bridgeStatus?: { ok: boolean; error?: string };
-  keepAlive?: KeepAliveStatus;
 }
+
+// Cookies that must be present for a healthy session (defaults to all).
+const REQUIRED_COOKIES =
+  config.requiredCookies && config.requiredCookies.length
+    ? config.requiredCookies
+    : config.cookies;
+// Short-lived cookies primed on demand; their absence is not an error.
+const BOOTSTRAP_COOKIES = config.bootstrapCookies ?? [];
 
 let currentPayload: CookiePayload | null = null;
 
@@ -430,6 +429,9 @@ mcp.tool(
         };
       });
 
+    const missingRequired = REQUIRED_COOKIES.filter((name) => !payload.cookies[name]);
+    const missingBootstrap = BOOTSTRAP_COOKIES.filter((name) => !payload.cookies[name]);
+
     const result: Record<string, unknown> = {
       cookies: playwrightCookies,
       usage: `await context.addCookies(${JSON.stringify(playwrightCookies)})`,
@@ -438,6 +440,13 @@ mcp.tool(
       fresh,
     };
     if (staleWarning) result.warning = staleWarning;
+    if (missingRequired.length) result.missingRequired = missingRequired;
+    if (missingBootstrap.length) {
+      // Bootstrap cookies must be present at instantiation but expire on their
+      // own — tell the caller to prime rather than treating this as broken.
+      result.missingBootstrap = missingBootstrap;
+      result.primeHint = `Bootstrap cookie(s) ${missingBootstrap.join(", ")} are not present. They expire on their own; click "Prime session" in the MCP Cookie Bridge extension (or reload your ${new URL(config.cookieUrl).hostname} tab), then call this tool again before creating the Playwright context.`;
+    }
 
     return {
       content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
@@ -472,17 +481,28 @@ mcp.tool(
 
     const { ageSeconds, fresh, staleWarning } = freshness(payload);
 
+    const missingRequired = REQUIRED_COOKIES.filter((name) => !payload.cookies[name]);
+    const missingBootstrap = BOOTSTRAP_COOKIES.filter((name) => !payload.cookies[name]);
+    const requiredPresent = missingRequired.length === 0;
+
     const status = {
-      status: payload.allPresent && fresh ? "healthy" : "degraded",
-      allPresent: payload.allPresent,
+      // Health is driven by REQUIRED cookies. Bootstrap cookies expire on their
+      // own and are primed on demand, so their absence is not "degraded".
+      status: requiredPresent && fresh ? "healthy" : "degraded",
+      requiredPresent,
       presentCookies: config.cookies.filter((name) => payload.cookies[name]),
-      missingCookies: config.cookies.filter((name) => !payload.cookies[name]),
+      missingRequired,
+      missingBootstrap,
       timestamp: payload.timestamp,
       ageSeconds,
       fresh,
       cookieUrl: config.cookieUrl,
       ...(staleWarning ? { warning: staleWarning } : {}),
-      ...(payload.keepAlive ? { keepAlive: payload.keepAlive } : {}),
+      ...(missingBootstrap.length
+        ? {
+            primeHint: `Bootstrap cookie(s) ${missingBootstrap.join(", ")} absent (normal — they expire). Prime before use: click "Prime session" in the extension or reload your source-host tab.`,
+          }
+        : {}),
     };
 
     return {

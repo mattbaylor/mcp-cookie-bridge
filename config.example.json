@@ -2,8 +2,6 @@
   "cookieUrl": "https://your-source-host.example.com",
   "bridgePort": 18443,
   "refreshIntervalMinutes": 2,
-  "keepAliveIntervalMinutes": 0,
-  "keepAliveThresholdSeconds": 300,
   "staleAfterSeconds": 600,
   "targetDomain": "localhost",
   "targetPort": 8443,
@@ -11,5 +9,12 @@
     "session_token",
     "auth_jwt",
     "device_id"
+  ],
+  "requiredCookies": [
+    "auth_jwt",
+    "device_id"
+  ],
+  "bootstrapCookies": [
+    "session_token"
   ]
 }
