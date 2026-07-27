@@ -155,14 +155,26 @@ let clientMode = false;
 function ensureConfigDir() {
   const dir = path.dirname(COOKIE_FILE);
   if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  }
+  // Enforce owner-only on the dir even if it pre-existed with looser perms.
+  try {
+    fs.chmodSync(dir, 0o700);
+  } catch {
+    // best effort
   }
 }
 
 function saveToDisk(payload: CookiePayload) {
   try {
     ensureConfigDir();
-    fs.writeFileSync(COOKIE_FILE, JSON.stringify(payload, null, 2), "utf-8");
+    // The file holds live session tokens (incl. httpOnly). Write owner-only and
+    // re-chmod in case it pre-existed world-readable.
+    fs.writeFileSync(COOKIE_FILE, JSON.stringify(payload, null, 2), {
+      encoding: "utf-8",
+      mode: 0o600,
+    });
+    fs.chmodSync(COOKIE_FILE, 0o600);
   } catch (err) {
     console.error(`Failed to write ${COOKIE_FILE}:`, err);
   }
@@ -186,18 +198,21 @@ function loadFromDisk(): CookiePayload | null {
 
 function startBridge(): Promise<http.Server | null> {
   const server = http.createServer((req, res) => {
-    // CORS for Chrome extension
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-
+    // CORS is granted ONLY for the extension's cross-origin write (POST) and its
+    // preflight. It is deliberately NOT sent on the secret-returning GET /cookies
+    // — Node/curl clients don't need CORS, and withholding it stops a malicious
+    // web page from reading the tokens cross-origin via fetch().
     if (req.method === "OPTIONS") {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type");
       res.writeHead(204);
       res.end();
       return;
     }
 
     if (req.method === "POST" && req.url === "/cookies") {
+      res.setHeader("Access-Control-Allow-Origin", "*");
       let body = "";
       req.on("data", (chunk) => (body += chunk));
       req.on("end", () => {
