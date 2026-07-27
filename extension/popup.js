@@ -74,6 +74,31 @@ function render(payload, cfg) {
     lastRefresh.textContent = d.toLocaleTimeString();
   }
 
+  // Keep-alive status
+  const kaEl = document.getElementById('keepAliveText');
+  if (kaEl) {
+    const ka = payload.keepAlive;
+    if (!cfg.keepAliveIntervalMinutes) {
+      kaEl.textContent = 'disabled';
+      kaEl.style.color = '';
+    } else if (!ka) {
+      kaEl.textContent = 'enabled — waiting for first check';
+      kaEl.style.color = '';
+    } else {
+      const when = new Date(ka.lastRunAt).toLocaleTimeString();
+      const life =
+        ka.minSecondsToExpiry == null
+          ? 'no dated cookie'
+          : `${Math.round(ka.minSecondsToExpiry / 60)}m left`;
+      let text = `${when} · ${ka.tabsFound} tab(s) · ${life}`;
+      if (ka.reloaded) text += ` · reloaded ${ka.reloaded}`;
+      kaEl.textContent = text;
+      kaEl.title = ka.reason || '';
+      // Warn (amber) when enabled but no source-host tab is open to reload.
+      kaEl.style.color = ka.tabsFound === 0 ? '#fdba74' : '';
+    }
+  }
+
   // Bridge status
   if (payload.bridgeStatus?.ok) {
     bridgeStatus.className = 'bridge-status connected';

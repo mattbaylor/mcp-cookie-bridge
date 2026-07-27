@@ -146,7 +146,8 @@ Log into your dev server in Chrome, then ask your AI assistant:
 | `cookieUrl` | string | required | The URL/host to read (harvest) cookies from (e.g. `https://staging.example.com`) |
 | `bridgePort` | number | `18443` | Local port for the HTTP bridge between extension and MCP server |
 | `refreshIntervalMinutes` | number | `2` | How often the extension pushes cookie updates |
-| `keepAliveIntervalMinutes` | number | `0` | How often the extension reloads an open source-host tab to keep a remote session alive. `0` disables it. See [Keeping a remote session alive](#keeping-a-remote-session-alive) |
+| `keepAliveIntervalMinutes` | number | `0` | How often the extension checks the session and, if at risk, reloads an open source-host tab to keep it alive. `0` disables it. See [Keeping a remote session alive](#keeping-a-remote-session-alive) |
+| `keepAliveThresholdSeconds` | number | `300` | Reload the source-host tab(s) when the soonest cookie expiry is within this many seconds |
 | `staleAfterSeconds` | number | `600` | Age threshold (seconds) after which cookies are flagged as stale |
 | `targetDomain` | string | `localhost` | Host the cookies are re-targeted to in `get_playwright_cookies` output |
 | `targetPort` | number | `8443` | Port used to build the Playwright `targetUrl` string |
@@ -162,16 +163,31 @@ The config file is searched in this order:
 
 When you harvest from a remote host (e.g. a staging site) whose session cookie
 is short-lived, the session will expire if the tab sits idle. Set
-`keepAliveIntervalMinutes` to have the extension periodically reload an open tab
-pointed at `cookieUrl`'s host, which re-bootstraps auth and rotates the session
-cookie; the fresh cookies are then re-harvested automatically.
+`keepAliveIntervalMinutes` (> 0) to have the extension periodically **check** the
+session and, only when it is at risk, reload an open tab pointed at `cookieUrl`'s
+host — which re-bootstraps auth and rotates the session cookie. The fresh cookies
+are then re-harvested automatically.
+
+"At risk" means either a configured cookie is missing, or the soonest cookie
+expiry is within `keepAliveThresholdSeconds`. When the session is healthy the
+extension does nothing, so a tab you're actively using is never disturbed (active
+use keeps the session far from expiry). When it is at risk, every open
+source-host tab is reloaded — including the focused one, since an idle near-expiry
+tab is safe to reload.
 
 This works via a tab reload rather than a background request on purpose:
 `SameSite=Strict` session cookies are only sent on same-site navigations, so a
 `fetch()` from the extension's service worker (a cross-site context) would not
-carry the cookie. The reload **skips the active tab in your focused window** — a
-tab you're actively using is kept warm by your own activity — so keep a
-dedicated background tab open on the source host for this to have an effect.
+carry the cookie. **Keep a dedicated tab open on the source host** for keep-alive
+to have anything to reload — it cannot revive a session once fully expired
+(re-login is expected, e.g. daily).
+
+**Confirming it works:** open the extension popup — the **Keep-alive** line shows
+the last check time, how many source-host tabs were found, minutes of session
+life left, and whether it reloaded (it turns amber if enabled but no tab is
+open). The same status is included in the `get_cookie_status` MCP tool output,
+and detailed lines are logged to the extension's service-worker console
+(`chrome://extensions/` → the extension → *Inspect views: service worker*).
 
 ## MCP Tools
 

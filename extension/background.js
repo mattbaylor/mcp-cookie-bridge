@@ -8,7 +8,7 @@
 // Config loading
 // ---------------------------------------------------------------------------
 
-/** @type {{ cookieUrl: string, bridgePort: number, refreshIntervalMinutes: number, keepAliveIntervalMinutes?: number, cookies: string[] } | null} */
+/** @type {{ cookieUrl: string, bridgePort: number, refreshIntervalMinutes: number, keepAliveIntervalMinutes?: number, keepAliveThresholdSeconds?: number, cookies: string[] } | null} */
 let config = null;
 
 async function loadConfig() {
@@ -102,6 +102,14 @@ async function refresh() {
   const payload = await readCookies();
   if (!payload) return null;
 
+  // Attach the latest keep-alive status so it rides along to the bridge/popup.
+  try {
+    const { keepAlive } = await chrome.storage.local.get('keepAlive');
+    if (keepAlive) payload.keepAlive = keepAlive;
+  } catch {
+    // storage unavailable — non-fatal
+  }
+
   // Always persist to extension storage (popup reads this)
   await chrome.storage.local.set({ lastPayload: payload });
 
@@ -159,47 +167,94 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     refresh();
   }
   if (alarm.name === 'cookie-keepalive') {
-    keepAliveReload();
+    keepAliveCheck();
   }
 });
 
 // ---------------------------------------------------------------------------
-// Keep-alive — reload an open source-host tab so the remote session cookie
-// keeps rotating.
+// Keep-alive — reload an open source-host tab so a short-lived remote session
+// cookie keeps rotating.
 //
-// The BFF session cookie is SameSite=Strict, so it is only sent on same-site
-// navigations. A background fetch from this service worker is cross-site and
-// would NOT carry the cookie — so the only way to keep the session warm is to
-// reload an actual tab pointed at the source host. We never reload the tab the
-// user is actively working in (the focused window's active tab); their own
-// activity already keeps that one warm.
+// The session cookie is typically SameSite=Strict, so it is only sent on
+// same-site navigations. A background fetch from this service worker is
+// cross-site and would NOT carry the cookie — so the only way to keep the
+// session warm is to reload an actual tab pointed at the source host.
+//
+// This runs on every keep-alive alarm as a *check*: it reloads only when the
+// session is actually at risk — either a configured cookie is missing, or the
+// soonest cookie expiry is within keepAliveThresholdSeconds. When healthy it
+// does nothing (and, in particular, never disturbs a tab you're actively using,
+// because active use keeps the session far from expiry). When at risk it
+// reloads every open source-host tab, including the focused one — if you were
+// actively using it the session wouldn't be near expiry, so an idle reload is
+// safe. Status is recorded to storage (and pushed to the bridge) for
+// observability.
 // ---------------------------------------------------------------------------
 
-async function keepAliveReload() {
+async function keepAliveCheck() {
   if (!config) await loadConfig();
-  if (!config || !config.cookieUrl) return;
-  if (!(config.keepAliveIntervalMinutes > 0)) return;
+  if (!config || !config.cookieUrl) return null;
+  if (!(config.keepAliveIntervalMinutes > 0)) return null;
 
+  const thresholdSec = config.keepAliveThresholdSeconds || 300;
   const host = new URL(config.cookieUrl).hostname;
+
+  /** @type {{lastRunAt:string, host:string, tabsFound:number, reloaded:number, minSecondsToExpiry:(number|null), thresholdSeconds:number, reason:string}} */
+  const status = {
+    lastRunAt: new Date().toISOString(),
+    host,
+    tabsFound: 0,
+    reloaded: 0,
+    minSecondsToExpiry: null,
+    thresholdSeconds: thresholdSec,
+    reason: '',
+  };
+
   const tabs = await chrome.tabs.query({ url: `*://${host}/*` });
-  if (!tabs.length) return;
+  status.tabsFound = tabs.length;
 
-  // Identify the active tab in the focused window so we can skip it.
-  let activeTabId = -1;
-  try {
-    const win = await chrome.windows.getLastFocused();
-    if (win && win.focused) {
-      const [active] = await chrome.tabs.query({ active: true, windowId: win.id });
-      if (active) activeTabId = active.id;
+  // Determine the soonest expiry among present, dated cookies.
+  const payload = await readCookies();
+  let minRemainingMs = Infinity;
+  if (payload) {
+    for (const name of config.cookies) {
+      const c = payload.cookies[name];
+      if (c && c.expirationDate) {
+        minRemainingMs = Math.min(minRemainingMs, c.expirationDate * 1000 - Date.now());
+      }
     }
-  } catch {
-    // No focused window (e.g. Chrome in background) — safe to reload all matches.
+  }
+  const minSec = Number.isFinite(minRemainingMs) ? Math.round(minRemainingMs / 1000) : null;
+  status.minSecondsToExpiry = minSec;
+
+  const anyMissing = !payload || !payload.allPresent;
+  const nearExpiry = minSec !== null && minSec < thresholdSec;
+  const needReload = anyMissing || nearExpiry;
+
+  if (!tabs.length) {
+    status.reason = 'no source-host tab open — cannot keep the session alive';
+  } else if (!needReload) {
+    status.reason = `healthy — ${minSec}s to expiry (>= ${thresholdSec}s), no reload`;
+  } else {
+    for (const tab of tabs) {
+      if (tab.id != null) {
+        chrome.tabs.reload(tab.id);
+        status.reloaded++;
+      }
+    }
+    status.reason = anyMissing
+      ? `cookie(s) missing — reloaded ${status.reloaded} tab(s) to re-establish session`
+      : `${minSec}s to expiry (< ${thresholdSec}s) — reloaded ${status.reloaded} tab(s)`;
   }
 
-  for (const tab of tabs) {
-    if (tab.id == null || tab.id === activeTabId) continue;
-    chrome.tabs.reload(tab.id);
-  }
+  console.error('[keep-alive]', status.reason, `(tabsFound=${status.tabsFound}, minSecondsToExpiry=${minSec})`);
+  await chrome.storage.local.set({ keepAlive: status });
+
+  // Push the status promptly. If we reloaded, the tabs.onUpdated handler will
+  // also refresh once the reload completes with the rotated cookies.
+  if (!status.reloaded) refresh();
+
+  return status;
 }
 
 // Re-harvest as soon as a source-host tab finishes (re)loading, so the freshly

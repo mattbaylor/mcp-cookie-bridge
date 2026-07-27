@@ -30,11 +30,17 @@ interface Config {
   /** Staleness threshold in seconds. Defaults to 600 (10 min). */
   staleAfterSeconds?: number;
   /**
-   * Extension-only: how often (minutes) the extension reloads an open source-host
-   * tab to keep a SameSite=Strict remote session alive. 0/absent disables it.
-   * Unused by the server; declared here so the config schema lives in one place.
+   * Extension-only: how often (minutes) the extension checks the session and,
+   * if it is at risk, reloads an open source-host tab to keep a SameSite=Strict
+   * remote session alive. 0/absent disables it. Unused by the server; declared
+   * here so the config schema lives in one place.
    */
   keepAliveIntervalMinutes?: number;
+  /**
+   * Extension-only: reload the source-host tab(s) when the soonest cookie expiry
+   * is within this many seconds. Defaults to 300.
+   */
+  keepAliveThresholdSeconds?: number;
   /**
    * Domain the captured cookies are re-targeted to when emitted for Playwright.
    * The source cookies are harvested from cookieUrl's host but applied to this
@@ -103,12 +109,23 @@ interface CookieEntry {
   expirationDate: number | null;
 }
 
+interface KeepAliveStatus {
+  lastRunAt: string;
+  host: string;
+  tabsFound: number;
+  reloaded: number;
+  minSecondsToExpiry: number | null;
+  thresholdSeconds: number;
+  reason: string;
+}
+
 interface CookiePayload {
   cookies: Record<string, CookieEntry | null>;
   allPresent: boolean;
   timestamp: string;
   cookieUrl?: string;
   bridgeStatus?: { ok: boolean; error?: string };
+  keepAlive?: KeepAliveStatus;
 }
 
 let currentPayload: CookiePayload | null = null;
@@ -465,6 +482,7 @@ mcp.tool(
       fresh,
       cookieUrl: config.cookieUrl,
       ...(staleWarning ? { warning: staleWarning } : {}),
+      ...(payload.keepAlive ? { keepAlive: payload.keepAlive } : {}),
     };
 
     return {

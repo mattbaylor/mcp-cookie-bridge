@@ -3,6 +3,7 @@
   "bridgePort": 18443,
   "refreshIntervalMinutes": 2,
   "keepAliveIntervalMinutes": 0,
+  "keepAliveThresholdSeconds": 300,
   "staleAfterSeconds": 600,
   "targetDomain": "localhost",
   "targetPort": 8443,
