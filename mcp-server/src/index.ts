@@ -25,8 +25,14 @@ import * as os from "node:os";
 interface Config {
   cookieUrl: string;
   /**
-   * Extension-only: URL that "Prime session" navigates to after clearing cookies,
-   * to force a clean login. Defaults to cookieUrl when omitted.
+   * Extension-only: preferred Prime action. When set, "Prime session" navigates
+   * the tab here WITH cookies intact to perform a real server-side logout (which
+   * clears cookies and redirects to login). e.g. ".../logout?reason=logout".
+   */
+  logoutUrl?: string;
+  /**
+   * Extension-only: fallback used only when logoutUrl is not set. "Prime session"
+   * deletes primeClearCookies and navigates here. Defaults to cookieUrl.
    */
   loginUrl?: string;
   bridgePort: number;

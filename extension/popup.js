@@ -129,7 +129,7 @@ document.getElementById('primeBtn').addEventListener('click', () => {
       return;
     }
     primeStatus.style.color = '#93c5fd';
-    primeStatus.textContent = `Cleared ${res.cleared} cookie(s) & reloaded — log in in the tab; cookies capture automatically.`;
+    primeStatus.textContent = 'Logging out — complete login in the tab; cookies capture automatically.';
     // Re-render with the (now-cleared) payload; login will update it live.
     Promise.all([
       new Promise((resolve) => chrome.runtime.sendMessage({ type: 'getConfig' }, resolve)),

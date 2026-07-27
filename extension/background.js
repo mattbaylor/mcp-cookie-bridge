@@ -8,7 +8,7 @@
 // Config loading
 // ---------------------------------------------------------------------------
 
-/** @type {{ cookieUrl: string, bridgePort: number, refreshIntervalMinutes: number, cookies: string[], requiredCookies?: string[], bootstrapCookies?: string[], primeClearCookies?: string[], loginUrl?: string } | null} */
+/** @type {{ cookieUrl: string, bridgePort: number, refreshIntervalMinutes: number, cookies: string[], requiredCookies?: string[], bootstrapCookies?: string[], primeClearCookies?: string[], loginUrl?: string, logoutUrl?: string } | null} */
 let config = null;
 
 // Cookies that must always be present for the session to be considered healthy.
@@ -191,12 +191,17 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 // bootstrap/BFF cookie) is re-minted.
 //
 // A plain reload with the session cookies still set does NOT re-mint the
-// bootstrap cookie — it is only issued by going through the login flow. So Prime
-// deletes the identified cookies and reloads the source-host tab: the app lands
-// unauthenticated and redirects to login. Once you complete login in that tab,
-// the cookies are re-set and harvested automatically (via the cookie-change and
-// tab-load listeners). Run this right before instantiating a session (e.g. a
-// Playwright context) that needs the bootstrap cookie present.
+// bootstrap cookie — it is only issued by the login flow. Prime drives a real
+// logout→login:
+//   - If logoutUrl is configured, navigate the tab there WITH cookies intact so
+//     the server invalidates the session, clears its cookies, and redirects to
+//     login (the correct way — a server-side logout, not just a local wipe).
+//   - Otherwise fall back to deleting the identified cookies (primeClearCookies)
+//     and navigating to loginUrl.
+// Once you complete login in that tab, the cookies are re-set and harvested
+// automatically (via the cookie-change and tab-load listeners). Run this right
+// before instantiating a session (e.g. a Playwright context) that needs the
+// bootstrap cookie present.
 // ---------------------------------------------------------------------------
 
 async function clearConfiguredCookies(host) {
@@ -238,24 +243,36 @@ async function primeSession() {
     };
   }
 
-  // Delete the identified cookies so the tab lands unauthenticated.
-  const cleared = await clearConfiguredCookies(host);
-
-  // Force the primary tab to the configured login URL (falls back to cookieUrl).
-  // Navigating to an explicit login URL is more reliable than reloading a deep
-  // app route, which may not cleanly redirect to login. Login is interactive;
-  // the cookie-change / tab-load listeners harvest automatically once you finish.
-  const loginUrl = config.loginUrl || config.cookieUrl;
   const primaryTabId = tabs[0].id;
+  let cleared = 0;
+  let destination;
+  let action;
+
+  if (config.logoutUrl) {
+    // Preferred: a real server-side logout. Navigate WITH cookies intact so the
+    // server can identify and invalidate the session, clear its own cookies, and
+    // redirect to the login page. (Clearing cookies first would break this.)
+    destination = config.logoutUrl;
+    action = `logout via ${destination}`;
+  } else {
+    // Fallback for hosts without a logout endpoint: delete the identified cookies
+    // locally, then land on the login URL.
+    cleared = await clearConfiguredCookies(host);
+    destination = config.loginUrl || config.cookieUrl;
+    action = `cleared ${cleared} cookie(s), sent tab to ${destination}`;
+  }
+
   if (primaryTabId != null) {
-    await chrome.tabs.update(primaryTabId, { url: loginUrl, active: true });
+    await chrome.tabs.update(primaryTabId, { url: destination, active: true });
   }
   // Drop the authed view on any other source-host tabs too.
   for (const t of tabs) if (t.id != null && t.id !== primaryTabId) chrome.tabs.reload(t.id);
 
-  const payload = await refresh(); // reflects the cleared state immediately
-  console.log('[prime]', `cleared ${cleared} cookie(s) on ${host}; sent tab to ${loginUrl}`);
-  return { ok: true, cleared, loginUrl, needsLogin: true, payload };
+  // Login is interactive; the cookie-change / tab-load listeners harvest
+  // automatically once you finish. This refresh reflects the immediate state.
+  const payload = await refresh();
+  console.log('[prime]', action);
+  return { ok: true, cleared, destination, action, needsLogin: true, payload };
 }
 
 // Re-harvest as soon as a source-host tab finishes (re)loading, so freshly

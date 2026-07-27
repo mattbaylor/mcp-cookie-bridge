@@ -1,6 +1,7 @@
 {
   "cookieUrl": "https://your-source-host.example.com",
   "loginUrl": "https://your-source-host.example.com/login",
+  "logoutUrl": "https://your-source-host.example.com/logout",
   "bridgePort": 18443,
   "refreshIntervalMinutes": 2,
   "staleAfterSeconds": 600,

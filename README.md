@@ -155,7 +155,8 @@ Log into your dev server in Chrome, then ask your AI assistant:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `cookieUrl` | string | required | The URL/host to read (harvest) cookies from (e.g. `https://staging.example.com`) |
-| `loginUrl` | string | `cookieUrl` | URL **"Prime session"** navigates to after clearing cookies, to force a clean login (e.g. `https://staging.example.com/login`) |
+| `logoutUrl` | string | — | Preferred **"Prime session"** target: a real logout URL (e.g. `https://staging.example.com/logout?reason=logout`). Navigated to with cookies intact so the server logs out, clears cookies, and redirects to login |
+| `loginUrl` | string | `cookieUrl` | Fallback used only when `logoutUrl` is unset: Prime deletes `primeClearCookies` then navigates here |
 | `bridgePort` | number | `18443` | Local port for the HTTP bridge between extension and MCP server |
 | `refreshIntervalMinutes` | number | `2` | How often the extension pushes cookie updates |
 | `requiredCookies` | string[] | all `cookies` | Cookies that must be present for a healthy session; drive the status badge |
@@ -187,13 +188,17 @@ demand**:
 - When you need one present — right before instantiating a session such as a
   Playwright context — click **"Prime session"** in the extension popup. A plain
   reload does *not* re-mint a bootstrap cookie while the session cookies are still
-  set; it is only issued by the login flow. So Prime **deletes the session
-  cookies (`primeClearCookies`, defaulting to all `cookies`) and reloads** the
-  source-host tab and sends it to `loginUrl` (defaults to `cookieUrl`), so it
-  lands unauthenticated on the login page. **Complete the login in that tab** and
-  the full cookie set (bootstrap included) is re-set and harvested automatically.
-  Use `primeClearCookies` to keep cookies you don't want deleted — e.g. a device
-  id whose removal would trigger a new-device challenge.
+  set; it is only issued by the login flow. So Prime drives a real logout→login:
+  - If **`logoutUrl`** is set (preferred), it navigates the tab there **with
+    cookies intact** so the server performs a proper logout — invalidating the
+    session, clearing its cookies, and redirecting to login.
+  - Otherwise it falls back to deleting `primeClearCookies` (defaults to all
+    `cookies`) and navigating to `loginUrl`. Use `primeClearCookies` to preserve
+    cookies you don't want deleted — e.g. a device id whose removal would trigger
+    a new-device challenge.
+
+  **Complete the login in that tab** and the full cookie set (bootstrap included)
+  is re-set and harvested automatically.
 
 `get_playwright_cookies` and `get_cookie_status` include a `primeHint` whenever a
 bootstrap cookie is missing. Priming needs the `cookies` and `tabs` permissions;
