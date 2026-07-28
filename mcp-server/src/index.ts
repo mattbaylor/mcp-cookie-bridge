@@ -79,7 +79,7 @@ interface Config {
    */
   persist?: boolean;
   /**
-   * Allowlist of permitted cookieUrl host suffixes (e.g. ["banno-staging.com"]).
+   * Allowlist of permitted cookieUrl host suffixes (e.g. ["staging.example.com"]).
    * When set, the server refuses to start if cookieUrl's host doesn't match one —
    * a guard against pointing the tool at production.
    */
