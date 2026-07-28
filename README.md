@@ -176,6 +176,21 @@ The config file is searched in this order:
 3. `config.json` (repo root)
 4. `~/.config/mcp-cookie-bridge/config.json`
 
+### Configuring via the extension UI
+
+The extension has an **options page** (its ⚙ Settings link, or `chrome://extensions/`
+→ Details → Extension options) with a form for every setting. It saves to
+`chrome.storage` (which the extension prefers over the bundled `config.json`).
+
+- **Import JSON** — upload a shared preset to configure the extension in one click.
+  If the file has no `bridgeToken`, a per-device one is generated.
+- **Export JSON** — download the current settings as `config.json`. **The MCP
+  server reads a file, not this UI**, so place the exported file at one of the
+  server config paths above and restart the server.
+
+For team rollout: one person configures, **Exports**, and shares the JSON;
+teammates **Import** it (and drop the same file at their server config path).
+
 ## Priming the session
 
 Some auth setups issue a short-lived **bootstrap** cookie (e.g. a BFF session)

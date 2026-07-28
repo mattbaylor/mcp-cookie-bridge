@@ -44,12 +44,23 @@ function primeClearCookieNames() {
 }
 
 async function loadConfig() {
+  // Prefer UI-managed config saved via the options page; fall back to the bundled
+  // config.json shipped with the extension.
+  try {
+    const { config: stored } = await chrome.storage.local.get('config');
+    if (stored && typeof stored === 'object' && stored.cookieUrl) {
+      config = stored;
+      return config;
+    }
+  } catch {
+    // storage unavailable — fall through to bundled file
+  }
   try {
     const resp = await fetch(chrome.runtime.getURL('config.json'));
     config = await resp.json();
   } catch {
     console.error(
-      'MCP Cookie Bridge: config.json not found. Copy config.example.json to config.json and configure it.'
+      'MCP Cookie Bridge: no saved config and config.json not found. Open the extension options to configure it.'
     );
     config = null;
   }
@@ -320,6 +331,19 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'prime') {
     primeSession().then(sendResponse);
     return true; // async response
+  }
+  if (msg.type === 'saveConfig') {
+    // Persist the UI-provided config and re-apply it (guard, alarms, harvest).
+    (async () => {
+      try {
+        await chrome.storage.local.set({ config: msg.config });
+        await init();
+        sendResponse({ ok: true });
+      } catch (err) {
+        sendResponse({ ok: false, error: err.message });
+      }
+    })();
+    return true;
   }
 });
 

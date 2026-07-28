@@ -138,6 +138,12 @@ document.getElementById('primeBtn').addEventListener('click', () => {
   });
 });
 
+// Settings link — open the options page
+document.getElementById('settingsLink').addEventListener('click', (e) => {
+  e.preventDefault();
+  chrome.runtime.openOptionsPage();
+});
+
 // Refresh button
 document.getElementById('refreshBtn').addEventListener('click', () => {
   const btn = document.getElementById('refreshBtn');
