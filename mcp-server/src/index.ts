@@ -261,7 +261,7 @@ function startBridge(): Promise<http.Server | null> {
     if (req.method === "OPTIONS") {
       res.setHeader("Access-Control-Allow-Origin", "*");
       res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Cookie-Bridge-Token");
       res.writeHead(204);
       res.end();
       return;
