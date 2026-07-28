@@ -165,6 +165,9 @@ Log into your dev server in Chrome, then ask your AI assistant:
 | `staleAfterSeconds` | number | `600` | Age threshold (seconds) after which cookies are flagged as stale |
 | `targetDomain` | string | `localhost` | Host the cookies are re-targeted to in `get_playwright_cookies` output |
 | `targetPort` | number | `8443` | Port used to build the Playwright `targetUrl` string |
+| `bridgeToken` | string | — | Shared secret. When set, the bridge requires an `X-Cookie-Bridge-Token` header on `/cookies`. **Must match** in the extension and server config |
+| `persist` | boolean | `true` | Persist cookies to `~/.config/mcp-cookie-bridge/cookies.json`. Set `false` for memory-only (no tokens at rest) |
+| `allowedHosts` | string[] | — | Allowlist of permitted `cookieUrl` host suffixes (e.g. `["staging.example.com"]`). When set, the server refuses to start and the extension refuses to harvest for any other host — a guard against production |
 | `cookies` | string[] | required | Cookie names to capture |
 
 The config file is searched in this order:
@@ -215,10 +218,39 @@ keep a source-host tab open.
 
 ## Security
 
-- Cookies are stored in Chrome extension storage and in `~/.config/mcp-cookie-bridge/cookies.json`
-- The HTTP bridge listens only on `127.0.0.1` (loopback) — not exposed to the network
-- `config.json` and `cookies.json` are `.gitignore`d to prevent leaking secrets
-- The extension requests `host_permissions` for `localhost` and the configured source host (e.g. `*.staging.example.com`)
+**Trust boundary.** The tool uses your *own* already-authenticated browser
+session on the *configured (staging) host*, on your *own* machine. It creates no
+new credentials and grants no access you don't already have — it automates what
+you could do by hand in DevTools, with tighter handling:
+
+- **Scoped** — only the cookies named in `cookies` are read, not the whole jar.
+- **No secret sprawl** — values never touch the clipboard, shell history, or chat.
+- **No secrets in git** — `config.json`, `extension/config.json`, `manifest.json`
+  and `cookies.json` are `.gitignore`d; the repo carries names only.
+- **Real logout** — Prime performs a server-side logout, invalidating the old
+  session rather than just deleting local cookies.
+
+**Handling of secrets at rest / in transit:**
+
+- The HTTP bridge listens only on `127.0.0.1` (loopback), never the network.
+- `cookies.json` is written owner-only (`0600`, dir `0700`); set `persist: false`
+  for memory-only (no tokens at rest).
+- CORS is sent only on the extension's write (`POST`), never on the
+  secret-returning `GET /cookies`, so a malicious web page cannot read your tokens
+  cross-origin via the loopback bridge.
+- Set `bridgeToken` to require an `X-Cookie-Bridge-Token` header on `/cookies`, so
+  other local processes that can reach the port but can't read your `0600` config
+  cannot read or inject cookies.
+- Set `allowedHosts` to prevent the tool from ever operating against production.
+
+**Notes for review:**
+
+- The extension necessarily reads `httpOnly` cookies (via `chrome.cookies`) — the
+  same capability DevTools has — because the tokens are needed to instantiate a
+  session. Exposure is minimised by the controls above.
+- The extension is **dev-loaded (unpacked) and code-reviewed in this repo**, not
+  installed from a store; it requests `cookies`, `tabs`, and `host_permissions`
+  for `localhost` and the configured source host only.
 
 ## License
 

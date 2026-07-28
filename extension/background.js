@@ -8,8 +8,14 @@
 // Config loading
 // ---------------------------------------------------------------------------
 
-/** @type {{ cookieUrl: string, bridgePort: number, refreshIntervalMinutes: number, cookies: string[], requiredCookies?: string[], bootstrapCookies?: string[], primeClearCookies?: string[], loginUrl?: string, logoutUrl?: string } | null} */
+/** @type {{ cookieUrl: string, bridgePort: number, refreshIntervalMinutes: number, cookies: string[], requiredCookies?: string[], bootstrapCookies?: string[], primeClearCookies?: string[], loginUrl?: string, logoutUrl?: string, bridgeToken?: string, allowedHosts?: string[] } | null} */
 let config = null;
+
+/** True if `host` equals or is a subdomain of one of the allowed suffixes. */
+function hostAllowed(host, allowed) {
+  if (!allowed || !allowed.length) return true;
+  return allowed.some((s) => host === s || host.endsWith('.' + s));
+}
 
 // Cookies that must always be present for the session to be considered healthy.
 // Defaults to all configured cookies when not specified.
@@ -111,9 +117,11 @@ async function postToBridge(payload) {
   if (!url) return { ok: false, error: 'No config loaded' };
 
   try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (config.bridgeToken) headers['X-Cookie-Bridge-Token'] = config.bridgeToken;
     const resp = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(payload),
     });
     if (!resp.ok) throw new Error(`Bridge returned ${resp.status}`);
@@ -345,6 +353,24 @@ async function init() {
     chrome.action.setBadgeBackgroundColor({ color: '#f59e0b' });
     return;
   }
+
+  // H5 — prod guard: refuse to harvest from a host outside the allowlist.
+  try {
+    const host = new URL(config.cookieUrl).hostname;
+    if (!hostAllowed(host, config.allowedHosts)) {
+      console.error(
+        `MCP Cookie Bridge: cookieUrl host "${host}" not in allowedHosts [${(config.allowedHosts || []).join(', ')}] — refusing to harvest.`
+      );
+      chrome.action.setBadgeText({ text: 'BLK' });
+      chrome.action.setBadgeBackgroundColor({ color: '#ef4444' });
+      return;
+    }
+  } catch {
+    chrome.action.setBadgeText({ text: '!' });
+    chrome.action.setBadgeBackgroundColor({ color: '#f59e0b' });
+    return;
+  }
+
   await setupAlarm();
   await refresh();
 }

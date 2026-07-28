@@ -66,6 +66,30 @@ interface Config {
   targetDomain?: string;
   /** Port used to build the Playwright targetUrl string. Defaults to 8443. */
   targetPort?: number;
+  /**
+   * Shared secret. When set, the loopback bridge requires an
+   * `X-Cookie-Bridge-Token: <token>` header on /cookies (GET and POST), so other
+   * local processes that can reach the port but can't read this config cannot
+   * read or inject cookies. The extension must be configured with the same token.
+   */
+  bridgeToken?: string;
+  /**
+   * Whether to persist cookies to ~/.config/mcp-cookie-bridge/cookies.json.
+   * Defaults to true. Set false for memory-only (no session tokens at rest).
+   */
+  persist?: boolean;
+  /**
+   * Allowlist of permitted cookieUrl host suffixes (e.g. ["banno-staging.com"]).
+   * When set, the server refuses to start if cookieUrl's host doesn't match one —
+   * a guard against pointing the tool at production.
+   */
+  allowedHosts?: string[];
+}
+
+/** True if `host` equals or is a subdomain of one of the allowed suffixes. */
+function hostAllowed(host: string, allowed?: string[]): boolean {
+  if (!allowed || !allowed.length) return true; // no allowlist configured
+  return allowed.some((suffix) => host === suffix || host.endsWith("." + suffix));
 }
 
 const CONFIG_SEARCH_PATHS = [
@@ -102,8 +126,32 @@ function loadConfig(): Config {
 }
 
 const config = loadConfig();
+
+// H5 — prod guard: refuse to run against a host outside the allowlist.
+try {
+  const cookieHost = new URL(config.cookieUrl).hostname;
+  if (!hostAllowed(cookieHost, config.allowedHosts)) {
+    console.error(
+      `Refusing to start: cookieUrl host "${cookieHost}" is not in allowedHosts [${(config.allowedHosts || []).join(", ")}]. ` +
+        `Update allowedHosts or cookieUrl.`
+    );
+    process.exit(1);
+  }
+} catch {
+  console.error(`Invalid cookieUrl: ${config.cookieUrl}`);
+  process.exit(1);
+}
+
 const BRIDGE_PORT = config.bridgePort || 18443;
 const STALE_SECONDS = config.staleAfterSeconds ?? 600;
+const BRIDGE_TOKEN = config.bridgeToken || null; // H3 — shared secret (optional)
+const PERSIST = config.persist !== false; // H4 — default true
+
+if (!BRIDGE_TOKEN) {
+  console.error(
+    "Warning: no bridgeToken configured — any local process that can reach the bridge port can read cookies. Set bridgeToken to require an auth header."
+  );
+}
 
 const COOKIE_FILE = path.join(
   os.homedir(),
@@ -172,6 +220,7 @@ function ensureConfigDir() {
 }
 
 function saveToDisk(payload: CookiePayload) {
+  if (!PERSIST) return; // H4 — memory-only mode
   try {
     ensureConfigDir();
     // The file holds live session tokens (incl. httpOnly). Write owner-only and
@@ -187,6 +236,7 @@ function saveToDisk(payload: CookiePayload) {
 }
 
 function loadFromDisk(): CookiePayload | null {
+  if (!PERSIST) return null; // H4 — memory-only mode
   try {
     if (fs.existsSync(COOKIE_FILE)) {
       const raw = fs.readFileSync(COOKIE_FILE, "utf-8");
@@ -215,6 +265,15 @@ function startBridge(): Promise<http.Server | null> {
       res.writeHead(204);
       res.end();
       return;
+    }
+
+    // H3 — require the shared token on the secret /cookies routes when set.
+    if (BRIDGE_TOKEN && req.url === "/cookies") {
+      if (req.headers["x-cookie-bridge-token"] !== BRIDGE_TOKEN) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
+        return;
+      }
     }
 
     if (req.method === "POST" && req.url === "/cookies") {
@@ -287,7 +346,9 @@ function startBridge(): Promise<http.Server | null> {
 
 async function fetchPayloadFromDaemon(): Promise<CookiePayload | null> {
   try {
-    const res = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/cookies`);
+    const res = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/cookies`, {
+      headers: BRIDGE_TOKEN ? { "X-Cookie-Bridge-Token": BRIDGE_TOKEN } : {},
+    });
     if (!res.ok) return null;
     const json = (await res.json()) as CookiePayload | { error: string };
     if ("error" in json) return null;

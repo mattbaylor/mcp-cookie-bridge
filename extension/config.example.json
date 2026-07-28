@@ -19,5 +19,9 @@
   "primeClearCookies": [
     "session_token",
     "auth_jwt"
+  ],
+  "bridgeToken": "CHANGE_ME_shared_secret",
+  "allowedHosts": [
+    "staging.example.com"
   ]
 }
