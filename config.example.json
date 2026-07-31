@@ -1,31 +1,44 @@
 {
-  "cookieUrl": "https://your-source-host.example.com",
-  "loginUrl": "https://your-source-host.example.com/login",
-  "logoutUrl": "https://your-source-host.example.com/logout",
   "bridgePort": 18443,
+  "bridgeToken": "CHANGE_ME_shared_secret",
+  "persist": true,
   "refreshIntervalMinutes": 2,
   "staleAfterSeconds": 600,
-  "targetDomain": "localhost",
-  "targetPort": 8443,
-  "cookies": [
-    "session_token",
-    "auth_jwt",
-    "device_id"
-  ],
-  "requiredCookies": [
-    "auth_jwt",
-    "device_id"
-  ],
-  "bootstrapCookies": [
-    "session_token"
-  ],
-  "primeClearCookies": [
-    "session_token",
-    "auth_jwt"
-  ],
-  "bridgeToken": "CHANGE_ME_shared_secret",
-  "allowedHosts": [
-    "staging.example.com"
-  ],
-  "persist": true
+  "allowProduction": false,
+  "defaultProfile": "app-staging",
+  "profiles": {
+    "app-staging": {
+      "cookieUrl": "https://staging.example.com",
+      "loginUrl": "https://staging.example.com/login",
+      "logoutUrl": "https://staging.example.com/logout",
+      "cookies": ["session_token", "auth_jwt", "device_id"],
+      "requiredCookies": ["auth_jwt", "device_id"],
+      "bootstrapCookies": ["session_token"],
+      "primeClearCookies": ["session_token", "auth_jwt"],
+      "targetDomain": "localhost",
+      "targetPort": 8443,
+      "allowedHosts": ["staging.example.com"]
+    },
+    "app-production": {
+      "cookieUrl": "https://www.example.com",
+      "loginUrl": "https://www.example.com/login",
+      "logoutUrl": "https://www.example.com/logout",
+      "cookies": ["session_token", "auth_jwt", "device_id"],
+      "requiredCookies": ["auth_jwt", "device_id"],
+      "bootstrapCookies": ["session_token"],
+      "targetDomain": "localhost",
+      "targetPort": 8443,
+      "allowedHosts": ["example.com"],
+      "production": true
+    },
+    "other-app-staging": {
+      "cookieUrl": "https://staging.other-app.example",
+      "loginUrl": "https://staging.other-app.example/login",
+      "cookies": ["oa_session", "oa_csrf"],
+      "requiredCookies": ["oa_session"],
+      "targetDomain": "localhost",
+      "targetPort": 9000,
+      "allowedHosts": ["other-app.example"]
+    }
+  }
 }

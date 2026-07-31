@@ -7,7 +7,7 @@
     * { box-sizing: border-box; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      max-width: 720px;
+      max-width: 760px;
       margin: 0 auto;
       padding: 24px;
       background: #0f172a;
@@ -21,12 +21,12 @@
     legend { color: #f8fafc; font-weight: 600; padding: 0 6px; }
     label { display: block; margin: 12px 0 4px; color: #cbd5e1; font-weight: 500; }
     label .hint { display: block; font-weight: 400; color: #64748b; font-size: 11px; margin-top: 2px; }
-    input[type="text"], input[type="number"], textarea {
+    input[type="text"], input[type="number"], textarea, select {
       width: 100%; padding: 8px 10px; border: 1px solid #334155; border-radius: 6px;
       background: #1e293b; color: #e2e8f0; font-size: 13px; font-family: inherit;
     }
-    input:focus, textarea:focus { outline: none; border-color: #3b82f6; }
-    textarea { resize: vertical; min-height: 60px; font-family: 'SF Mono', 'Menlo', monospace; font-size: 12px; }
+    input:focus, textarea:focus, select:focus { outline: none; border-color: #3b82f6; }
+    textarea { resize: vertical; min-height: 48px; font-family: 'SF Mono', 'Menlo', monospace; font-size: 12px; }
     .row { display: flex; gap: 12px; }
     .row > div { flex: 1; }
     .check { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
@@ -42,57 +42,28 @@
     button:hover { background: #2563eb; }
     button.secondary { background: #1e293b; color: #cbd5e1; }
     button.secondary:hover { background: #334155; }
+    button.danger { background: #7f1d1d; color: #fecaca; }
+    button.danger:hover { background: #991b1b; }
     #status { margin-top: 10px; min-height: 18px; font-size: 12px; }
     .note { background: #1e293b; border-left: 3px solid #3b82f6; padding: 10px 12px; border-radius: 4px; color: #cbd5e1; margin-bottom: 16px; }
     code { background: #1e293b; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+    .profile-card { border: 1px solid #334155; border-radius: 8px; padding: 14px; margin-bottom: 14px; background: #0b1220; }
+    .profile-head { display: flex; gap: 10px; align-items: center; }
+    .profile-head .p-key { flex: 1; font-weight: 600; }
+    .profile-head .prod { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+    .prod-badge { color: #fca5a5; font-size: 11px; }
   </style>
 </head>
 <body>
   <h1>MCP Cookie Bridge — Settings</h1>
-  <p class="sub">These settings are stored in the extension. <strong>Export</strong> the JSON and place it at the MCP server's config path too (the server reads a file, not this UI).</p>
+  <p class="sub">Define one or more <strong>profiles</strong> (host + cookie combos). Settings are stored in the extension. <strong>Export</strong> the JSON and place it at the MCP server's config path too (the server reads a file, not this UI).</p>
 
   <div class="note">
-    Replicating across a team? Have one person configure this, click <strong>Export JSON</strong>, and share the file. Everyone else clicks <strong>Import JSON</strong>. If the imported file has no <code>bridgeToken</code>, a per-device one is generated automatically.
+    Replicating across a team? Configure once, click <strong>Export JSON</strong>, and share the file. Others click <strong>Import JSON</strong>. If the imported file has no <code>bridgeToken</code>, a per-device one is generated automatically.
   </div>
 
   <fieldset>
-    <legend>Source & navigation</legend>
-    <label>Cookie URL <span class="hint">Host to harvest cookies from, e.g. https://staging.example.com</span></label>
-    <input type="text" id="cookieUrl" placeholder="https://staging.example.com">
-    <label>Logout URL <span class="hint">Preferred Prime target — a real logout URL (cookies intact → server logout → login)</span></label>
-    <input type="text" id="logoutUrl" placeholder="https://staging.example.com/logout?reason=logout">
-    <label>Login URL <span class="hint">Fallback Prime target when no logout URL is set</span></label>
-    <input type="text" id="loginUrl" placeholder="https://staging.example.com/login">
-  </fieldset>
-
-  <fieldset>
-    <legend>Cookies <span style="font-weight:400;color:#64748b;font-size:11px;">(one per line)</span></legend>
-    <label>Cookies to capture</label>
-    <textarea id="cookies" placeholder="auth_jwt&#10;session_token&#10;device_id"></textarea>
-    <label>Required cookies <span class="hint">Drive health/badge (defaults to all)</span></label>
-    <textarea id="requiredCookies" placeholder="auth_jwt&#10;device_id"></textarea>
-    <label>Bootstrap cookies <span class="hint">Short-lived; absence is normal, primed on demand</span></label>
-    <textarea id="bootstrapCookies" placeholder="session_token"></textarea>
-    <label>Prime-clear cookies <span class="hint">Deleted by Prime's fallback path (defaults to all). Preserve e.g. a device id</span></label>
-    <textarea id="primeClearCookies" placeholder="session_token&#10;auth_jwt"></textarea>
-  </fieldset>
-
-  <fieldset>
-    <legend>Playwright target</legend>
-    <div class="row">
-      <div>
-        <label>Target domain</label>
-        <input type="text" id="targetDomain" placeholder="localhost">
-      </div>
-      <div>
-        <label>Target port</label>
-        <input type="number" id="targetPort" placeholder="8443">
-      </div>
-    </div>
-  </fieldset>
-
-  <fieldset>
-    <legend>Bridge & timing</legend>
+    <legend>Bridge &amp; timing</legend>
     <div class="row">
       <div>
         <label>Bridge port</label>
@@ -107,21 +78,27 @@
         <input type="number" id="staleAfterSeconds" placeholder="600">
       </div>
     </div>
-  </fieldset>
-
-  <fieldset>
-    <legend>Security</legend>
     <label>Bridge token <span class="hint">Shared secret required on the bridge. Must match the server config. Keep secret.</span></label>
     <div class="token-row">
       <input type="text" id="bridgeToken" placeholder="(none — endpoint is unauthenticated)">
       <button type="button" class="secondary" id="genTokenBtn">Generate</button>
     </div>
-    <label>Allowed hosts <span class="hint">One per line. cookieUrl host must match one of these or the tool refuses to run (prod guard)</span></label>
-    <textarea id="allowedHosts" placeholder="staging.example.com"></textarea>
+    <label>Default profile <span class="hint">Used by tools when no profile/url is given</span></label>
+    <select id="defaultProfile"></select>
     <div class="check">
       <input type="checkbox" id="persist">
       <label for="persist">Persist cookies to disk (uncheck for memory-only)</label>
     </div>
+    <div class="check">
+      <input type="checkbox" id="allowProduction">
+      <label for="allowProduction">Allow production <span class="hint" style="display:inline;">Required before any profile marked "production" will harvest. Off by default.</span></label>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Profiles</legend>
+    <div id="profiles"></div>
+    <button type="button" class="secondary" id="addProfileBtn">+ Add profile</button>
   </fieldset>
 
   <div class="actions">
@@ -131,6 +108,59 @@
     <input type="file" id="importFile" accept="application/json,.json" style="display:none">
   </div>
   <div id="status"></div>
+
+  <template id="profileTpl">
+    <div class="profile-card">
+      <div class="profile-head">
+        <div style="flex:1;">
+          <label>Profile key <span class="hint">Short unique name, e.g. app-staging</span></label>
+          <input type="text" class="p-key" placeholder="app-staging">
+        </div>
+        <div class="prod">
+          <label class="check" style="margin-top:24px;"><input type="checkbox" class="p-production"> production</label>
+        </div>
+        <button type="button" class="danger p-remove" style="margin-top:24px;">Remove</button>
+      </div>
+      <label>Cookie URL <span class="hint">Host to harvest cookies from</span></label>
+      <input type="text" class="p-cookieUrl" placeholder="https://staging.example.com">
+      <div class="row">
+        <div>
+          <label>Logout URL <span class="hint">Preferred Prime target</span></label>
+          <input type="text" class="p-logoutUrl" placeholder="https://staging.example.com/logout">
+        </div>
+        <div>
+          <label>Login URL <span class="hint">Fallback Prime target</span></label>
+          <input type="text" class="p-loginUrl" placeholder="https://staging.example.com/login">
+        </div>
+      </div>
+      <label>Cookies to capture <span class="hint">one per line</span></label>
+      <textarea class="p-cookies" placeholder="auth_jwt&#10;session_token&#10;device_id"></textarea>
+      <div class="row">
+        <div>
+          <label>Required cookies <span class="hint">drive health (default: all)</span></label>
+          <textarea class="p-requiredCookies" placeholder="auth_jwt&#10;device_id"></textarea>
+        </div>
+        <div>
+          <label>Bootstrap cookies <span class="hint">short-lived, primed on demand</span></label>
+          <textarea class="p-bootstrapCookies" placeholder="session_token"></textarea>
+        </div>
+      </div>
+      <label>Prime-clear cookies <span class="hint">deleted by Prime's fallback (default: all)</span></label>
+      <textarea class="p-primeClearCookies" placeholder="session_token&#10;auth_jwt"></textarea>
+      <div class="row">
+        <div>
+          <label>Target domain</label>
+          <input type="text" class="p-targetDomain" placeholder="localhost">
+        </div>
+        <div>
+          <label>Target port</label>
+          <input type="number" class="p-targetPort" placeholder="8443">
+        </div>
+      </div>
+      <label>Allowed hosts <span class="hint">one per line; cookieUrl host must match or the profile is blocked</span></label>
+      <textarea class="p-allowedHosts" placeholder="staging.example.com"></textarea>
+    </div>
+  </template>
 
   <script src="options.js"></script>
 </body>

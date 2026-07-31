@@ -1,161 +1,130 @@
-// MCP Cookie Bridge — Popup Script
+// MCP Cookie Bridge — popup (per-profile status + prime)
 
-/** @type {string[]} */
-let cookieNames = [];
+function getConfig() {
+  return new Promise((resolve) => chrome.runtime.sendMessage({ type: 'getConfig' }, resolve));
+}
+function getState() {
+  return new Promise((resolve) => chrome.runtime.sendMessage({ type: 'getState' }, resolve));
+}
 
-function render(payload, cfg) {
-  const statusBar = document.getElementById('statusBar');
-  const statusDot = document.getElementById('statusDot');
-  const statusText = document.getElementById('statusText');
-  const cookieList = document.getElementById('cookieList');
-  const lastRefresh = document.getElementById('lastRefresh');
-  const bridgeStatus = document.getElementById('bridgeStatus');
-  const sourceUrl = document.getElementById('sourceUrl');
-
-  if (!cfg) {
-    statusBar.className = 'status-bar noconfig';
-    statusDot.className = 'dot yellow';
-    statusText.textContent = 'No config.json found';
-    return;
-  }
-
-  cookieNames = cfg.cookies || [];
-  sourceUrl.textContent = cfg.cookieUrl || '--';
-
-  const requiredNames =
-    cfg.requiredCookies && cfg.requiredCookies.length ? cfg.requiredCookies : cookieNames;
-  const bootstrapNames = cfg.bootstrapCookies || [];
-
-  if (!payload) {
-    statusText.textContent = 'No data yet — click Refresh';
-    return;
-  }
-
-  // Cookie list
-  cookieList.innerHTML = '';
-  let requiredPresent = 0;
-  for (const name of cookieNames) {
-    const li = document.createElement('li');
-    const nameSpan = document.createElement('span');
-    nameSpan.className = 'cookie-name';
-    nameSpan.textContent = name;
-    nameSpan.title = name;
-
-    const isBootstrap = bootstrapNames.includes(name);
-    const isRequired = requiredNames.includes(name);
-    if (isBootstrap) {
-      const tag = document.createElement('span');
-      tag.className = 'cookie-optional-tag';
-      tag.textContent = 'bootstrap';
-      nameSpan.appendChild(tag);
-    }
-
-    const present = !!(payload.cookies && payload.cookies[name]);
-    if (isRequired && present) requiredPresent++;
-
-    const statusSpan = document.createElement('span');
-    if (present) {
-      statusSpan.className = 'cookie-present';
-      statusSpan.textContent = '\u2713';
-    } else if (isBootstrap) {
-      // Bootstrap cookies come and go — absence is normal, not an error.
-      statusSpan.className = 'cookie-bootstrap';
-      statusSpan.textContent = 'prime';
-    } else {
-      statusSpan.className = 'cookie-missing';
-      statusSpan.textContent = '\u2717';
-    }
-
-    li.appendChild(nameSpan);
-    li.appendChild(statusSpan);
-    cookieList.appendChild(li);
-  }
-
-  // Status bar — driven by REQUIRED cookies only.
-  const totalRequired = requiredNames.length;
-  if (requiredPresent === totalRequired) {
-    statusBar.className = 'status-bar ok';
-    statusDot.className = 'dot green';
-    statusText.textContent = `Session ready (${totalRequired}/${totalRequired} required)`;
-  } else if (requiredPresent > 0) {
-    statusBar.className = 'status-bar partial';
-    statusDot.className = 'dot yellow';
-    statusText.textContent = `${requiredPresent}/${totalRequired} required cookies present`;
+function renderBridge(bridgeStatus) {
+  const el = document.getElementById('bridgeStatus');
+  if (bridgeStatus && bridgeStatus.ok) {
+    el.className = 'bridge-status connected';
+    el.textContent = 'MCP bridge: connected';
   } else {
-    statusBar.className = 'status-bar none';
-    statusDot.className = 'dot red';
-    statusText.textContent = 'Not logged in — no required cookies';
-  }
-
-  // Timestamp
-  if (payload.timestamp) {
-    const d = new Date(payload.timestamp);
-    lastRefresh.textContent = d.toLocaleTimeString();
-  }
-
-  // Bridge status
-  if (payload.bridgeStatus?.ok) {
-    bridgeStatus.className = 'bridge-status connected';
-    bridgeStatus.textContent = 'MCP bridge: connected';
-  } else {
-    bridgeStatus.className = 'bridge-status disconnected';
-    bridgeStatus.textContent = `MCP bridge: ${payload.bridgeStatus?.error || 'not connected'}`;
+    el.className = 'bridge-status disconnected';
+    el.textContent = `MCP bridge: ${(bridgeStatus && bridgeStatus.error) || 'not connected'}`;
   }
 }
 
-// Load config and initial state in parallel
-Promise.all([
-  new Promise((resolve) => chrome.runtime.sendMessage({ type: 'getConfig' }, resolve)),
-  new Promise((resolve) => chrome.runtime.sendMessage({ type: 'getState' }, resolve)),
-]).then(([cfg, payload]) => {
-  render(payload, cfg);
-});
+function renderProfileCard(rp, payload) {
+  const tpl = document.getElementById('profileTpl').content.cloneNode(true);
+  const card = tpl.querySelector('.profile');
+  const dot = card.querySelector('.p-dot');
+  const name = card.querySelector('.p-name');
+  const host = card.querySelector('.p-host');
+  const state = card.querySelector('.p-state');
+  const blocked = card.querySelector('.p-blocked');
+  const primeBtn = card.querySelector('.p-prime');
+  const primeStatus = card.querySelector('.p-primestatus');
 
-// Prime button — reload the source-host tab to mint a fresh bootstrap session.
-document.getElementById('primeBtn').addEventListener('click', () => {
-  const btn = document.getElementById('primeBtn');
-  const primeStatus = document.getElementById('primeStatus');
+  name.textContent = rp.key;
+  host.textContent = rp.cookieUrl;
+  if (rp.production) card.querySelector('.p-prod').style.display = '';
+  if (rp.isDefault) card.querySelector('.p-default').style.display = '';
+
+  if (rp.blocked) {
+    dot.className = 'dot gray p-dot';
+    blocked.style.display = '';
+    blocked.textContent = rp.blockedReason || 'blocked';
+    state.style.display = 'none';
+    primeBtn.disabled = true;
+    return card;
+  }
+
+  const required = rp.requiredCookies || [];
+  const bootstrap = rp.bootstrapCookies || [];
+  const present = (n) => !!(payload && payload.cookies && payload.cookies[n]);
+  const reqPresent = required.filter(present).length;
+  const missingReq = required.filter((n) => !present(n));
+  const missingBoot = bootstrap.filter((n) => !present(n));
+
+  if (!payload) {
+    dot.className = 'dot red p-dot';
+    state.innerHTML = 'No data yet — click Refresh';
+  } else if (reqPresent === required.length) {
+    dot.className = 'dot green p-dot';
+    state.innerHTML = `Session ready (${reqPresent}/${required.length} required)`;
+  } else if (reqPresent > 0) {
+    dot.className = 'dot yellow p-dot';
+    state.innerHTML = `${reqPresent}/${required.length} required present`;
+  } else {
+    dot.className = 'dot red p-dot';
+    state.innerHTML = 'Not logged in — no required cookies';
+  }
+
+  const bits = [];
+  if (payload && missingReq.length) bits.push(`<span class="miss">missing: ${missingReq.join(', ')}</span>`);
+  if (missingBoot.length) bits.push(`<span class="boot">prime: ${missingBoot.join(', ')}</span>`);
+  if (bits.length) state.innerHTML += '<br>' + bits.join(' · ');
+
+  primeBtn.addEventListener('click', () => {
+    primeBtn.disabled = true;
+    primeBtn.textContent = 'Priming…';
+    primeStatus.textContent = '';
+    chrome.runtime.sendMessage({ type: 'prime', profile: rp.key }, (res) => {
+      primeBtn.disabled = false;
+      primeBtn.textContent = 'Prime';
+      if (!res || !res.ok) {
+        primeStatus.style.color = '#fdba74';
+        primeStatus.textContent = (res && res.error) || 'Prime failed';
+        return;
+      }
+      primeStatus.style.color = '#93c5fd';
+      primeStatus.textContent = 'Complete login in the tab; cookies capture automatically.';
+    });
+  });
+
+  return card;
+}
+
+async function renderAll() {
+  const [cfg, st] = await Promise.all([getConfig(), getState()]);
+  const payloads = (st && st.payloads) || {};
+  renderBridge(st && st.bridgeStatus);
+
+  const container = document.getElementById('profiles');
+  const empty = document.getElementById('empty');
+  container.innerHTML = '';
+
+  const profiles = cfg && cfg.profiles ? Object.values(cfg.profiles) : [];
+  if (!profiles.length) {
+    empty.style.display = '';
+    return;
+  }
+  empty.style.display = 'none';
+  for (const rp of profiles) {
+    rp.isDefault = cfg.defaultProfile === rp.key;
+    container.appendChild(renderProfileCard(rp, payloads[rp.key]));
+  }
+}
+
+document.getElementById('refreshBtn').addEventListener('click', () => {
+  const btn = document.getElementById('refreshBtn');
   btn.disabled = true;
-  btn.textContent = 'Priming…';
-  primeStatus.textContent = '';
-  primeStatus.style.color = '';
-
-  chrome.runtime.sendMessage({ type: 'prime' }, (res) => {
-    btn.disabled = false;
-    btn.textContent = 'Prime session';
-    if (!res || !res.ok) {
-      primeStatus.style.color = '#fdba74';
-      primeStatus.textContent = (res && res.error) || 'Prime failed';
-      return;
-    }
-    primeStatus.style.color = '#93c5fd';
-    primeStatus.textContent = 'Logging out — complete login in the tab; cookies capture automatically.';
-    // Re-render with the (now-cleared) payload; login will update it live.
-    Promise.all([
-      new Promise((resolve) => chrome.runtime.sendMessage({ type: 'getConfig' }, resolve)),
-      new Promise((resolve) => chrome.runtime.sendMessage({ type: 'getState' }, resolve)),
-    ]).then(([cfg, payload]) => render(payload, cfg));
+  btn.textContent = 'Refreshing…';
+  chrome.runtime.sendMessage({ type: 'refresh' }, () => {
+    renderAll().then(() => {
+      btn.disabled = false;
+      btn.textContent = 'Refresh Now';
+    });
   });
 });
 
-// Settings link — open the options page
 document.getElementById('settingsLink').addEventListener('click', (e) => {
   e.preventDefault();
   chrome.runtime.openOptionsPage();
 });
 
-// Refresh button
-document.getElementById('refreshBtn').addEventListener('click', () => {
-  const btn = document.getElementById('refreshBtn');
-  btn.disabled = true;
-  btn.textContent = 'Refreshing...';
-
-  Promise.all([
-    new Promise((resolve) => chrome.runtime.sendMessage({ type: 'getConfig' }, resolve)),
-    new Promise((resolve) => chrome.runtime.sendMessage({ type: 'refresh' }, resolve)),
-  ]).then(([cfg, payload]) => {
-    render(payload, cfg);
-    btn.disabled = false;
-    btn.textContent = 'Refresh Now';
-  });
-});
+renderAll();
