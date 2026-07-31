@@ -1,15 +1,17 @@
 // MCP Cookie Bridge — Background Service Worker
 //
-// Reads cookies specified in config.json from a configured URL and pushes
-// them to a local MCP bridge server. Config-driven — no hardcoded cookie
-// names or URLs.
+// PROFILE-based: tracks many independent host+cookie combos (different apps
+// and/or environments) at once. Every non-blocked profile is harvested and
+// pushed to the local MCP bridge as a { profiles: { key: payload } } map. Also
+// polls the bridge's prime queue so an agent can request a re-login per profile.
+// Config-driven — no hardcoded cookie names or URLs.
 
 // ---------------------------------------------------------------------------
-// Config loading
+// State
 // ---------------------------------------------------------------------------
 
-/** @type {{ cookieUrl: string, bridgePort: number, refreshIntervalMinutes: number, cookies: string[], requiredCookies?: string[], bootstrapCookies?: string[], primeClearCookies?: string[], loginUrl?: string, logoutUrl?: string, bridgeToken?: string, allowedHosts?: string[] } | null} */
-let config = null;
+let rawConfig = null; // config as stored/bundled (authoring shape)
+let cfg = null; // normalized: { profiles, defaultProfile, allowProduction, bridgePort, bridgeToken, refreshIntervalMinutes }
 
 /** True if `host` equals or is a subdomain of one of the allowed suffixes. */
 function hostAllowed(host, allowed) {
@@ -17,323 +19,444 @@ function hostAllowed(host, allowed) {
   return allowed.some((s) => host === s || host.endsWith('.' + s));
 }
 
-// Cookies that must always be present for the session to be considered healthy.
-// Defaults to all configured cookies when not specified.
-function requiredCookieNames() {
-  if (!config) return [];
-  return config.requiredCookies && config.requiredCookies.length
-    ? config.requiredCookies
-    : config.cookies;
-}
+// ---------------------------------------------------------------------------
+// Config normalisation (mirror of the server) — supports profiles / legacy
+// environments / legacy flat shapes.
+// ---------------------------------------------------------------------------
 
-// Short-lived "bootstrap" cookies (e.g. a BFF session) that are minted when the
-// app loads and expire on their own. Their absence is normal — they are primed
-// on demand rather than kept warm. Defaults to none.
-function bootstrapCookieNames() {
-  return (config && config.bootstrapCookies) || [];
-}
+function normalizeConfig(raw) {
+  if (!raw) return null;
+  const allowProduction = raw.allowProduction === true;
 
-// Cookies that "Prime session" deletes to force a fresh login. Defaults to all
-// configured cookies; set primeClearCookies to preserve some (e.g. a long-lived
-// device id whose removal would trigger a new-device challenge).
-function primeClearCookieNames() {
-  if (!config) return [];
-  return config.primeClearCookies && config.primeClearCookies.length
-    ? config.primeClearCookies
-    : config.cookies;
+  let rawProfiles = {};
+  let defaultProfile = raw.defaultProfile || null;
+
+  if (raw.profiles && Object.keys(raw.profiles).length) {
+    rawProfiles = raw.profiles;
+  } else if (raw.environments && Object.keys(raw.environments).length) {
+    for (const [name, env] of Object.entries(raw.environments)) {
+      rawProfiles[name] = {
+        cookieUrl: env.cookieUrl,
+        loginUrl: env.loginUrl,
+        logoutUrl: env.logoutUrl,
+        allowedHosts: env.allowedHosts,
+        cookies: raw.cookies || [],
+        requiredCookies: raw.requiredCookies,
+        bootstrapCookies: raw.bootstrapCookies,
+        primeClearCookies: raw.primeClearCookies,
+        targetDomain: raw.targetDomain,
+        targetPort: raw.targetPort,
+        production: name.toLowerCase() === 'production',
+      };
+    }
+    if (!defaultProfile) defaultProfile = raw.activeEnv || 'staging';
+  } else if (raw.cookieUrl) {
+    rawProfiles.default = {
+      cookieUrl: raw.cookieUrl,
+      loginUrl: raw.loginUrl,
+      logoutUrl: raw.logoutUrl,
+      allowedHosts: raw.allowedHosts,
+      cookies: raw.cookies || [],
+      requiredCookies: raw.requiredCookies,
+      bootstrapCookies: raw.bootstrapCookies,
+      primeClearCookies: raw.primeClearCookies,
+      targetDomain: raw.targetDomain,
+      targetPort: raw.targetPort,
+    };
+    if (!defaultProfile) defaultProfile = 'default';
+  }
+
+  const keys = Object.keys(rawProfiles);
+  if (!keys.length) return null;
+  if (!defaultProfile && keys.length === 1) defaultProfile = keys[0];
+
+  const profiles = {};
+  for (const [key, p] of Object.entries(rawProfiles)) {
+    let host = '';
+    let invalid = false;
+    try {
+      host = new URL(p.cookieUrl).hostname;
+    } catch {
+      invalid = true;
+    }
+    const production = p.production === true;
+    let blocked = false;
+    let blockedReason;
+    if (invalid) {
+      blocked = true;
+      blockedReason = 'Invalid cookieUrl';
+    } else if (production && !allowProduction) {
+      blocked = true;
+      blockedReason = 'Production profile gated — enable "Allow production".';
+    } else if (!hostAllowed(host, p.allowedHosts)) {
+      blocked = true;
+      blockedReason = `Host ${host} not in allowedHosts`;
+    }
+    profiles[key] = {
+      key,
+      cookieUrl: p.cookieUrl,
+      host,
+      loginUrl: p.loginUrl,
+      logoutUrl: p.logoutUrl,
+      cookies: p.cookies || [],
+      requiredCookies:
+        p.requiredCookies && p.requiredCookies.length ? p.requiredCookies : p.cookies || [],
+      bootstrapCookies: p.bootstrapCookies || [],
+      primeClearCookies:
+        p.primeClearCookies && p.primeClearCookies.length ? p.primeClearCookies : p.cookies || [],
+      targetDomain: p.targetDomain || 'localhost',
+      targetPort: p.targetPort || 8443,
+      allowedHosts: p.allowedHosts,
+      production,
+      blocked,
+      blockedReason,
+    };
+  }
+
+  return {
+    allowProduction,
+    defaultProfile,
+    profiles,
+    bridgePort: raw.bridgePort || 18443,
+    bridgeToken: raw.bridgeToken || null,
+    refreshIntervalMinutes: raw.refreshIntervalMinutes || 2,
+  };
 }
 
 async function loadConfig() {
-  // Prefer UI-managed config saved via the options page; fall back to the bundled
-  // config.json shipped with the extension.
+  let raw = null;
   try {
     const { config: stored } = await chrome.storage.local.get('config');
-    if (stored && typeof stored === 'object' && stored.cookieUrl) {
-      config = stored;
-      return config;
+    if (stored && typeof stored === 'object' && (stored.profiles || stored.cookieUrl || stored.environments)) {
+      raw = stored;
     }
   } catch {
     // storage unavailable — fall through to bundled file
   }
-  try {
-    const resp = await fetch(chrome.runtime.getURL('config.json'));
-    config = await resp.json();
-  } catch {
-    console.error(
-      'MCP Cookie Bridge: no saved config and config.json not found. Open the extension options to configure it.'
-    );
-    config = null;
+  if (!raw) {
+    try {
+      const resp = await fetch(chrome.runtime.getURL('config.json'));
+      raw = await resp.json();
+    } catch {
+      console.error('MCP Cookie Bridge: no saved config and config.json not found. Open options to configure.');
+      rawConfig = null;
+      cfg = null;
+      return null;
+    }
   }
-  return config;
+  rawConfig = raw;
+  cfg = normalizeConfig(raw);
+  return cfg;
 }
 
-function getBridgeUrl() {
-  if (!config) return null;
-  return `http://127.0.0.1:${config.bridgePort}/cookies`;
+function bridgeBase() {
+  return cfg ? `http://127.0.0.1:${cfg.bridgePort}` : null;
+}
+
+function activeProfiles() {
+  if (!cfg) return [];
+  return Object.values(cfg.profiles).filter((p) => !p.blocked);
 }
 
 // ---------------------------------------------------------------------------
-// Core: read cookies from Chrome
+// Harvest — read every active profile's cookies
 // ---------------------------------------------------------------------------
 
-async function readCookies() {
-  if (!config) await loadConfig();
-  if (!config) return null;
-
-  // Use getAll with domain filter — this finds cookies on ANY path,
-  // unlike chrome.cookies.get which requires the URL path to match.
-  const domain = new URL(config.cookieUrl).hostname;
-  const allCookies = await chrome.cookies.getAll({ domain });
-
+async function readProfile(rp) {
+  const all = await chrome.cookies.getAll({ domain: rp.host });
   const results = {};
   let allPresent = true;
-
-  for (const name of config.cookies) {
-    const cookie = allCookies.find((c) => c.name === name);
-    if (cookie) {
+  for (const name of rp.cookies) {
+    const c = all.find((x) => x.name === name);
+    if (c) {
       results[name] = {
-        value: cookie.value,
-        domain: cookie.domain,
-        path: cookie.path,
-        httpOnly: cookie.httpOnly,
-        secure: cookie.secure,
-        sameSite: cookie.sameSite,
-        expirationDate: cookie.expirationDate || null,
+        value: c.value,
+        domain: c.domain,
+        path: c.path,
+        httpOnly: c.httpOnly,
+        secure: c.secure,
+        sameSite: c.sameSite,
+        expirationDate: c.expirationDate || null,
       };
     } else {
       results[name] = null;
       allPresent = false;
     }
   }
-
-  // Health is driven by the *required* cookies. Bootstrap cookies (e.g. a BFF
-  // session) are allowed to be absent — they are primed on demand.
-  const requiredPresent = requiredCookieNames().every((name) => results[name]);
-
+  const requiredPresent = rp.requiredCookies.every((n) => results[n]);
   return {
     cookies: results,
     allPresent,
     requiredPresent,
     timestamp: new Date().toISOString(),
-    cookieUrl: config.cookieUrl,
+    cookieUrl: rp.cookieUrl,
+    profile: rp.key,
   };
 }
 
-// ---------------------------------------------------------------------------
-// Push to the bridge HTTP endpoint (companion MCP server)
-// ---------------------------------------------------------------------------
+async function readAllProfiles() {
+  if (!cfg) await loadConfig();
+  if (!cfg) return null;
+  const profiles = {};
+  for (const rp of activeProfiles()) {
+    try {
+      profiles[rp.key] = await readProfile(rp);
+    } catch (err) {
+      console.error(`MCP Cookie Bridge: failed to read profile ${rp.key}:`, err);
+    }
+  }
+  return { profiles };
+}
 
-async function postToBridge(payload) {
-  const url = getBridgeUrl();
-  if (!url) return { ok: false, error: 'No config loaded' };
-
+async function postToBridge(state) {
+  const base = bridgeBase();
+  if (!base) return { ok: false, error: 'No config loaded' };
   try {
     const headers = { 'Content-Type': 'application/json' };
-    if (config.bridgeToken) headers['X-Cookie-Bridge-Token'] = config.bridgeToken;
-    const resp = await fetch(url, {
+    if (cfg.bridgeToken) headers['X-Cookie-Bridge-Token'] = cfg.bridgeToken;
+    const resp = await fetch(`${base}/cookies`, {
       method: 'POST',
       headers,
-      body: JSON.stringify(payload),
+      body: JSON.stringify(state),
     });
     if (!resp.ok) throw new Error(`Bridge returned ${resp.status}`);
     return { ok: true };
   } catch (err) {
-    // Bridge not running — that's fine, cookies are still in storage
     return { ok: false, error: err.message };
   }
 }
 
-// ---------------------------------------------------------------------------
-// Refresh cycle
-// ---------------------------------------------------------------------------
-
 async function refresh() {
-  const payload = await readCookies();
-  if (!payload) return null;
+  const state = await readAllProfiles();
+  if (!state) return null;
 
-  // Always persist to extension storage (popup reads this)
-  await chrome.storage.local.set({ lastPayload: payload });
+  await chrome.storage.local.set({ lastPayloads: state.profiles });
+  const bridgeResult = await postToBridge(state);
+  await chrome.storage.local.set({ lastBridgeStatus: bridgeResult });
 
-  // Try to push to the bridge
-  const bridgeResult = await postToBridge(payload);
-  payload.bridgeStatus = bridgeResult;
-
-  await chrome.storage.local.set({ lastPayload: payload });
-
-  // Update badge
-  updateBadge(payload);
-
-  return payload;
+  updateBadge(state.profiles);
+  // Opportunistically service any agent-requested primes.
+  drainPrimes().catch(() => {});
+  return state.profiles;
 }
 
-function updateBadge(payload) {
-  if (!config) return;
-
-  // Badge reflects the required cookies (bootstrap cookies are primed on demand
-  // and expected to come and go, so they must not turn the badge red).
-  const required = requiredCookieNames();
-  const presentRequired = required.filter((name) => payload.cookies[name]).length;
-
-  if (payload.requiredPresent) {
+function updateBadge(profiles) {
+  const active = activeProfiles();
+  if (!active.length) {
+    chrome.action.setBadgeText({ text: '!' });
+    chrome.action.setBadgeBackgroundColor({ color: '#f59e0b' });
+    return;
+  }
+  let healthy = 0;
+  for (const rp of active) {
+    const p = profiles[rp.key];
+    if (p && rp.requiredCookies.every((n) => p.cookies[n])) healthy++;
+  }
+  if (healthy === active.length) {
     chrome.action.setBadgeText({ text: 'OK' });
     chrome.action.setBadgeBackgroundColor({ color: '#22c55e' });
   } else {
-    chrome.action.setBadgeText({ text: `${presentRequired}/${required.length}` });
-    chrome.action.setBadgeBackgroundColor({ color: '#ef4444' });
+    chrome.action.setBadgeText({ text: `${healthy}/${active.length}` });
+    chrome.action.setBadgeBackgroundColor({ color: healthy ? '#f59e0b' : '#ef4444' });
   }
 }
 
 // ---------------------------------------------------------------------------
-// Alarms — periodic refresh
+// Prime — force a logout→login so short-lived bootstrap cookies are re-minted,
+// per profile. Opens a tab on the profile host if none is open.
 // ---------------------------------------------------------------------------
 
-async function setupAlarm() {
-  if (!config) await loadConfig();
-  const interval = config?.refreshIntervalMinutes || 2;
-
-  chrome.alarms.create('cookie-refresh', {
-    periodInMinutes: interval,
-  });
-
-  // Clear any legacy keep-alive alarm from older versions.
-  chrome.alarms.clear('cookie-keepalive');
-}
-
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === 'cookie-refresh') {
-    refresh();
-  }
-});
-
-// ---------------------------------------------------------------------------
-// Prime — force a fresh login so the full cookie set (incl. the short-lived
-// bootstrap/BFF cookie) is re-minted.
-//
-// A plain reload with the session cookies still set does NOT re-mint the
-// bootstrap cookie — it is only issued by the login flow. Prime drives a real
-// logout→login:
-//   - If logoutUrl is configured, navigate the tab there WITH cookies intact so
-//     the server invalidates the session, clears its cookies, and redirects to
-//     login (the correct way — a server-side logout, not just a local wipe).
-//   - Otherwise fall back to deleting the identified cookies (primeClearCookies)
-//     and navigating to loginUrl.
-// Once you complete login in that tab, the cookies are re-set and harvested
-// automatically (via the cookie-change and tab-load listeners). Run this right
-// before instantiating a session (e.g. a Playwright context) that needs the
-// bootstrap cookie present.
-// ---------------------------------------------------------------------------
-
-async function clearConfiguredCookies(host) {
-  // Look up the real cookie objects so we can build correct removal URLs, then
-  // remove each cookie this config tracks.
+async function clearProfileCookies(rp) {
   let all = [];
   try {
-    all = await chrome.cookies.getAll({ domain: host });
+    all = await chrome.cookies.getAll({ domain: rp.host });
   } catch {
     return 0;
   }
-  const wanted = new Set(primeClearCookieNames());
+  const wanted = new Set(rp.primeClearCookies);
   let removed = 0;
   for (const c of all) {
     if (!wanted.has(c.name)) continue;
     const scheme = c.secure ? 'https' : 'http';
-    const cookieHost = c.domain.replace(/^\./, ''); // domain cookies are dot-prefixed
+    const cookieHost = c.domain.replace(/^\./, '');
     const url = `${scheme}://${cookieHost}${c.path}`;
     try {
       await chrome.cookies.remove({ url, name: c.name });
       removed++;
     } catch {
-      // Best effort — keep going.
+      // best effort
     }
   }
   return removed;
 }
 
-async function primeSession() {
-  if (!config) await loadConfig();
-  if (!config || !config.cookieUrl) return { ok: false, error: 'No config loaded' };
+async function primeSession(profileKey) {
+  if (!cfg) await loadConfig();
+  const rp = cfg && cfg.profiles[profileKey];
+  if (!rp) return { ok: false, error: `Unknown profile ${profileKey}` };
+  if (rp.blocked) return { ok: false, error: `Profile ${profileKey} is blocked: ${rp.blockedReason}` };
 
-  const host = new URL(config.cookieUrl).hostname;
-  const tabs = await chrome.tabs.query({ url: `*://${host}/*` });
-  if (!tabs.length) {
-    return {
-      ok: false,
-      error: `No ${host} tab is open. Open one, then prime.`,
-    };
-  }
-
-  const primaryTabId = tabs[0].id;
+  const tabs = await chrome.tabs.query({ url: `*://${rp.host}/*` });
   let cleared = 0;
   let destination;
   let action;
 
-  if (config.logoutUrl) {
-    // Preferred: a real server-side logout. Navigate WITH cookies intact so the
-    // server can identify and invalidate the session, clear its own cookies, and
-    // redirect to the login page. (Clearing cookies first would break this.)
-    destination = config.logoutUrl;
+  if (rp.logoutUrl) {
+    destination = rp.logoutUrl;
     action = `logout via ${destination}`;
   } else {
-    // Fallback for hosts without a logout endpoint: delete the identified cookies
-    // locally, then land on the login URL.
-    cleared = await clearConfiguredCookies(host);
-    destination = config.loginUrl || config.cookieUrl;
+    cleared = await clearProfileCookies(rp);
+    destination = rp.loginUrl || rp.cookieUrl;
     action = `cleared ${cleared} cookie(s), sent tab to ${destination}`;
   }
 
-  if (primaryTabId != null) {
-    await chrome.tabs.update(primaryTabId, { url: destination, active: true });
+  if (tabs.length && tabs[0].id != null) {
+    await chrome.tabs.update(tabs[0].id, { url: destination, active: true });
+    for (const t of tabs.slice(1)) if (t.id != null) chrome.tabs.reload(t.id);
+  } else {
+    // No open tab for this host — open one so the human can log in.
+    await chrome.tabs.create({ url: destination, active: true });
+    action += ' (opened a new tab)';
   }
-  // Drop the authed view on any other source-host tabs too.
-  for (const t of tabs) if (t.id != null && t.id !== primaryTabId) chrome.tabs.reload(t.id);
 
-  // Login is interactive; the cookie-change / tab-load listeners harvest
-  // automatically once you finish. This refresh reflects the immediate state.
-  const payload = await refresh();
-  console.log('[prime]', action);
-  return { ok: true, cleared, destination, action, needsLogin: true, payload };
+  await refresh();
+  console.log(`[prime:${profileKey}]`, action);
+  return { ok: true, profile: profileKey, cleared, destination, action, needsLogin: true };
 }
 
-// Re-harvest as soon as a source-host tab finishes (re)loading, so freshly
-// minted cookies are pushed to the bridge without waiting for the next alarm.
-chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
-  if (changeInfo.status !== 'complete' || !config || !tab.url) return;
+// Drain the bridge's prime queue: run a prime for each profile an agent asked for.
+let draining = false;
+async function drainPrimes() {
+  const base = bridgeBase();
+  if (!base || draining) return;
+  draining = true;
   try {
-    const host = new URL(config.cookieUrl).hostname;
-    if (new URL(tab.url).hostname === host) refresh();
+    const headers = cfg.bridgeToken ? { 'X-Cookie-Bridge-Token': cfg.bridgeToken } : {};
+    const resp = await fetch(`${base}/prime`, { headers });
+    if (!resp.ok) return;
+    const { pending } = await resp.json();
+    for (const key of Object.keys(pending || {})) {
+      if (!cfg.profiles[key] || cfg.profiles[key].blocked) {
+        await clearPrime(key); // unknown/blocked — drop it
+        continue;
+      }
+      await primeSession(key);
+      await clearPrime(key);
+    }
   } catch {
-    // Ignore non-http(s) tab URLs.
+    // bridge not running — ignore
+  } finally {
+    draining = false;
   }
+}
+
+async function clearPrime(profileKey) {
+  const base = bridgeBase();
+  if (!base) return;
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (cfg.bridgeToken) headers['X-Cookie-Bridge-Token'] = cfg.bridgeToken;
+    await fetch(`${base}/prime/clear`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ profile: profileKey }),
+    });
+  } catch {
+    // ignore
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Alarms
+// ---------------------------------------------------------------------------
+
+async function setupAlarms() {
+  if (!cfg) await loadConfig();
+  const interval = (cfg && cfg.refreshIntervalMinutes) || 2;
+  chrome.alarms.create('cookie-refresh', { periodInMinutes: interval });
+  chrome.alarms.create('prime-poll', { periodInMinutes: 0.5 });
+  chrome.alarms.clear('cookie-keepalive');
+}
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'cookie-refresh') refresh();
+  else if (alarm.name === 'prime-poll') drainPrimes();
 });
 
 // ---------------------------------------------------------------------------
-// Message handler — popup can request immediate refresh or config
+// Listeners
+// ---------------------------------------------------------------------------
+
+// Re-harvest as soon as any profile-host tab finishes loading.
+chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
+  if (changeInfo.status !== 'complete' || !cfg || !tab.url) return;
+  try {
+    const host = new URL(tab.url).hostname;
+    if (activeProfiles().some((rp) => rp.host === host || host.endsWith('.' + rp.host))) refresh();
+  } catch {
+    // ignore non-http(s) URLs
+  }
+});
+
+// Refresh when a tracked cookie changes on any profile host.
+chrome.cookies.onChanged.addListener((changeInfo) => {
+  if (!cfg) return;
+  const name = changeInfo.cookie.name;
+  const cookieDomain = changeInfo.cookie.domain.replace(/^\./, '');
+  const match = activeProfiles().some(
+    (rp) =>
+      rp.cookies.includes(name) &&
+      (cookieDomain === rp.host || cookieDomain.endsWith('.' + rp.host))
+  );
+  if (match) refresh();
+});
+
+// ---------------------------------------------------------------------------
+// Messages
 // ---------------------------------------------------------------------------
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'refresh') {
-    refresh().then(sendResponse);
-    return true; // async response
+    refresh().then(sendResponse, (err) => sendResponse({ error: String(err && err.message || err) }));
+    return true;
   }
   if (msg.type === 'getState') {
-    chrome.storage.local.get('lastPayload', (data) => {
-      sendResponse(data.lastPayload || null);
+    chrome.storage.local.get(['lastPayloads', 'lastBridgeStatus'], (data) => {
+      sendResponse({ payloads: data.lastPayloads || {}, bridgeStatus: data.lastBridgeStatus || null });
     });
     return true;
   }
   if (msg.type === 'getConfig') {
+    // Normalized config (profiles + status) for the popup.
     (async () => {
-      if (!config) await loadConfig();
-      sendResponse(config);
+      try {
+        if (!cfg) await loadConfig();
+        sendResponse(cfg);
+      } catch (err) {
+        sendResponse(null);
+      }
+    })();
+    return true;
+  }
+  if (msg.type === 'getRawConfig') {
+    // Authoring shape for the options page.
+    (async () => {
+      try {
+        if (!rawConfig) await loadConfig();
+        sendResponse(rawConfig);
+      } catch (err) {
+        sendResponse(null);
+      }
     })();
     return true;
   }
   if (msg.type === 'prime') {
-    primeSession().then(sendResponse);
-    return true; // async response
+    primeSession(msg.profile).then(sendResponse, (err) =>
+      sendResponse({ ok: false, error: String(err && err.message || err) })
+    );
+    return true;
   }
   if (msg.type === 'saveConfig') {
-    // Persist the UI-provided config and re-apply it (guard, alarms, harvest).
     (async () => {
       try {
         await chrome.storage.local.set({ config: msg.config });
@@ -348,54 +471,27 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 });
 
 // ---------------------------------------------------------------------------
-// Cookie change listener — refresh when relevant cookies change
-// ---------------------------------------------------------------------------
-
-chrome.cookies.onChanged.addListener((changeInfo) => {
-  if (!config) return;
-  if (!config.cookies.includes(changeInfo.cookie.name)) return;
-
-  // Match the changed cookie against the configured source host instead of a
-  // hardcoded domain. Cookie domains may be host-only ("staging.example.com")
-  // or dot-prefixed domain cookies (".staging.example.com"); normalise the
-  // leading dot and accept the exact host or any subdomain of it.
-  const host = new URL(config.cookieUrl).hostname;
-  const cookieDomain = changeInfo.cookie.domain.replace(/^\./, '');
-  if (cookieDomain === host || cookieDomain.endsWith('.' + host)) {
-    refresh();
-  }
-});
-
-// ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
 
 async function init() {
   await loadConfig();
-  if (!config) {
+  if (!cfg) {
     chrome.action.setBadgeText({ text: '!' });
     chrome.action.setBadgeBackgroundColor({ color: '#f59e0b' });
     return;
   }
-
-  // H5 — prod guard: refuse to harvest from a host outside the allowlist.
-  try {
-    const host = new URL(config.cookieUrl).hostname;
-    if (!hostAllowed(host, config.allowedHosts)) {
-      console.error(
-        `MCP Cookie Bridge: cookieUrl host "${host}" not in allowedHosts [${(config.allowedHosts || []).join(', ')}] — refusing to harvest.`
-      );
-      chrome.action.setBadgeText({ text: 'BLK' });
-      chrome.action.setBadgeBackgroundColor({ color: '#ef4444' });
-      return;
-    }
-  } catch {
-    chrome.action.setBadgeText({ text: '!' });
-    chrome.action.setBadgeBackgroundColor({ color: '#f59e0b' });
-    return;
+  const blocked = Object.values(cfg.profiles).filter((p) => p.blocked);
+  if (blocked.length) {
+    // Informational, not an error: a gated production profile (or a host-guarded
+    // one) being blocked is expected. Use console.info so it doesn't surface in
+    // chrome://extensions' Errors panel.
+    console.info(
+      'MCP Cookie Bridge: blocked profiles — ' +
+        blocked.map((p) => `${p.key} (${p.blockedReason})`).join('; ')
+    );
   }
-
-  await setupAlarm();
+  await setupAlarms();
   await refresh();
 }
 
