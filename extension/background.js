@@ -167,7 +167,8 @@ async function readProfile(rp) {
   const results = {};
   let allPresent = true;
   for (const name of rp.cookies) {
-    const c = all.find((x) => x.name === name);
+    // Same name can exist at several paths; prefer the widest.
+    const c = all.filter((x) => x.name === name).sort((a, b) => a.path.length - b.path.length)[0];
     if (c) {
       results[name] = {
         value: c.value,
